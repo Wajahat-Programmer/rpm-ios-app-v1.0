@@ -10,6 +10,7 @@ import globalStyles from './globalStyles';
 import Login from './Login';
 import Home from './Home';
 import BloodPressure from './BloodPressure';
+import ECG from './ECG';
 import Connection from './Connection';
 import Settings  from './Settings';
 import Profile from './Profile';
@@ -31,6 +32,7 @@ export default function App() {
         <Stack.Screen name="Login" component={Login} />
         <Stack.Screen name="Home" component={Home} />
         <Stack.Screen name="BloodPressure" component={BloodPressure} />
+        <Stack.Screen name='ECG' component={ECG}/>
         <Stack.Screen name='Connection' component={Connection}/>
         <Stack.Screen name='Settings' component={Settings}/>
         <Stack.Screen name='Profile' component={Profile}/>

@@ -11,8 +11,10 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  StatusBar,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, {
   Polyline,
   Line as SvgLine,
@@ -441,43 +443,75 @@ export default function BloodPressure({navigation}) {
   };
 
   const handleRealTimeData = (data) => {
+  console.log("Realtime Data:", data);
+
+  if (data.type === "BP_PROGRESS") {
+    // Show progress while cuff is inflating/deflating
     setRealTimeData(data);
+    setIsMeasuring(true);
+
+  } else if (data.type === "BP") {
+    // ✅ Final result received → stop measuring immediately
+    stopMeasurement();
+
+    const newReading = {
+      date: new Date().toLocaleDateString(),
+      time: new Date().toLocaleTimeString(),
+      systolic: data.systolic,
+      diastolic: data.diastolic,
+      bpm: data.pulse, 
+    };
+
+    setBloodPressureData((prevData) => [newReading, ...prevData].slice(0, 7));
+    showToastMessage(
+      `Measurement: ${data.systolic}/${data.diastolic} mmHg, Pulse: ${data.pulse} BPM`,
+      3000
+    );
+
+    // Update current real-time panel with the final result
+    setRealTimeData(data);
+  }
+};
+
+
+  // const handleRealTimeData = (data) => {
+  //   setRealTimeData(data);
     
-    if (data.type === 'BP') {
-      // Final BP result
-      const newReading = {
-        id: Date.now(),
-        date: new Date().toLocaleDateString('en-US', { 
-          month: 'short', 
-          day: 'numeric', 
-          year: 'numeric' 
-        }),
-        time: new Date().toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }),
-        systolic: Number(data.systolic),
-        diastolic: Number(data.diastolic),
-        bpm: Number(data.pulse),
-        result: 0 // You can add logic to determine result based on values
-      };
+  //   if (data.type === 'BP') {
+  //     // Final BP result
+  //     const newReading = {
+  //       id: Date.now(),
+  //       date: new Date().toLocaleDateString('en-US', { 
+  //         month: 'short', 
+  //         day: 'numeric', 
+  //         year: 'numeric' 
+  //       }),
+  //       time: new Date().toLocaleTimeString('en-US', { 
+  //         hour: '2-digit', 
+  //         minute: '2-digit' 
+  //       }),
+  //       systolic: Number(data.systolic),
+  //       diastolic: Number(data.diastolic),
+  //       bpm: Number(data.pulse),
+  //       result: 0 // You can add logic to determine result based on values
+  //     };
 
-      setBloodPressureData((prev) => {
-        const next = [newReading, ...prev].slice(0, 7);
-        return next;
-      });
+  //     setBloodPressureData((prev) => {
+  //       const next = [newReading, ...prev].slice(0, 7);
+  //       return next;
+  //     });
 
-      setIsMeasuring(false);
-      showToastMessage(`Measurement: ${data.systolic}/${data.diastolic} mmHg, Pulse: ${data.pulse} BPM`, 3000);
-    } 
-    else if (data.type === 'BP_PROGRESS') {
-      // Measurement in progress
-      setIsMeasuring(true);
-      if (data.pressure > 0) {
-        showToastMessage('Measurement in progress...');
-      }
-    }
-  };
+  //     setIsMeasuring(false);
+  //     showToastMessage(`Measurement: ${data.systolic}/${data.diastolic} mmHg, Pulse: ${data.pulse} BPM`, 3000);
+  //   } 
+  //   else if (data.type === 'BP_PROGRESS') {
+  //     // Measurement in progress
+  //     setIsMeasuring(true);
+  //     if (data.pressure > 0) {
+  //       showToastMessage('Measurement in progress...');
+  //     }
+  //   }
+  // };
 
   const startScanning = () => {
     setDevices([]);
@@ -504,25 +538,31 @@ export default function BloodPressure({navigation}) {
     setRealTimeData(null);
   };
 
-  const startMeasurement = () => {
-    if (!connectedDevice) {
-      Alert.alert('Error', 'Please connect to a device first');
-      return;
-    }
+const startMeasurement = () => {
+  if (!connectedDevice) {
+    Alert.alert('Error', 'Please connect to a device first');
+    return;
+  }
 
-    setIsMeasuring(true);
-    
-    // Set a timeout to prevent infinite measurement
-    measurementTimeoutRef.current = setTimeout(() => {
-      if (isMeasuring) {
-        Alert.alert(
-          'Measurement Timeout', 
-          'The measurement took too long. Please check device connection and try again.'
-        );
-        setIsMeasuring(false);
-      }
-    }, 120000);
-  };
+  setIsMeasuring(true);
+  ViatomDeviceManager.startBPMeasurement();
+
+  // Clear any existing timeout before starting a new one
+  if (measurementTimeoutRef.current) {
+    clearTimeout(measurementTimeoutRef.current);
+  }
+
+  // Set a timeout to prevent infinite measurement (2 minutes)
+  measurementTimeoutRef.current = setTimeout(() => {
+    Alert.alert(
+      'Measurement Timeout',
+      'The measurement took too long. Please check device connection and try again.'
+    );
+    setIsMeasuring(false);
+    measurementTimeoutRef.current = null;
+  }, 120000);
+};
+
 
   const stopMeasurement = () => {
     if (measurementTimeoutRef.current) {
@@ -734,15 +774,15 @@ export default function BloodPressure({navigation}) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack}>
-          <Image
-            style={styles.backIcon}
-            source={require('./assets/icon_back.png')}
-          />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Blood pressure</Text>
-      </View>
+<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>Blood Pressure</Text>
+
+  </View>
+</SafeAreaView>
 
       {renderConnectionStatus()}
       {renderDeviceControls()}

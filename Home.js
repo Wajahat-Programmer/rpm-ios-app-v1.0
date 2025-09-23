@@ -58,8 +58,8 @@ export default function Home({ navigation }) {
 
   const handleLogout = async () => {
     try {
-      await fetch('http://192.168.1.32:3000/api/auth/logout', {
-        method: 'POST',
+      await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/logout', {
+        method: 'GET',
         credentials: 'include',
       });
       await CookieManager.clearAll();

@@ -8,6 +8,7 @@ export default {
   stopScan: () => ViatomDeviceManager.stopScan(),
   connectToDevice: (deviceId) => ViatomDeviceManager.connectToDevice(deviceId),
   disconnectDevice: () => ViatomDeviceManager.disconnectDevice(),
+  startBPMeasurement: () => ViatomDeviceManager.startBPMeasurement(), 
   
   addListener: (eventName, callback) => eventEmitter.addListener(eventName, callback),
   removeAllListeners: (eventName) => eventEmitter.removeAllListeners(eventName),

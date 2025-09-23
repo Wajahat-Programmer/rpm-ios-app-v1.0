@@ -1,7 +1,9 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, Linking, StatusBar, TouchableOpacity, Dimensions, Image } from 'react-native';
 import globalStyles from './globalStyles';
+import { SafeAreaView } from 'react-native-safe-area-context';
 const { width, height } = Dimensions.get('window');
+
 
 
 
@@ -11,19 +13,19 @@ export default function AboutAppScreen({ navigation }) {
   };
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      
       
       {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-          <Image 
-            source={require('./assets/icon_back.png')} 
-            style={styles.backIcon} 
-          />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>About App</Text>
-        <View style={styles.headerRightPlaceholder} />
-      </View>
+            <SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>About App</Text>
+
+  </View>
+</SafeAreaView>
+
 
       <ScrollView style={styles.content}>
         {/* App Info Card */}
@@ -68,19 +70,19 @@ export default function AboutAppScreen({ navigation }) {
           <Text style={styles.sectionTitle}>Legal</Text>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('https://yourwebsite.com/terms')}
+            // onPress={() => Linking.openURL('https://yourwebsite.com/terms')}
           >
             <Text style={styles.linkText}>Terms of Service</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('https://yourwebsite.com/privacy')}
+            // onPress={() => Linking.openURL('https://yourwebsite.com/privacy')}
           >
             <Text style={styles.linkText}>Privacy Policy</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('https://yourwebsite.com/hipaa')}
+            // onPress={() => Linking.openURL('https://yourwebsite.com/hipaa')}
           >
             <Text style={styles.linkText}>HIPAA Compliance</Text>
           </TouchableOpacity>
@@ -90,10 +92,10 @@ export default function AboutAppScreen({ navigation }) {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Company</Text>
           <Text style={styles.companyInfo}>
-            Developed by TwentyTwo Health Technologies
+            Developed Revive Medical Technologies Inc.
           </Text>
           <Text style={styles.companyInfo}>
-            © 2023 TwentyTwo Health. All rights reserved.
+            © 2025 Revive Medical Technologies. All rights reserved.
           </Text>
         </View>
 
@@ -105,9 +107,9 @@ export default function AboutAppScreen({ navigation }) {
           </Text>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('mailto:support@twentytwohealth.com')}
+            onPress={() => Linking.openURL('mailto:Info@twentytwohealth.com')}
           >
-            <Text style={styles.linkText}>support@twentytwohealth.com</Text>
+            <Text style={styles.linkText}>Info@twentytwohealth.com</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
@@ -118,12 +120,12 @@ export default function AboutAppScreen({ navigation }) {
         </View>
 
         {/* Credits Card */}
-        <View style={styles.card}>
+        {/* <View style={styles.card}>
           <Text style={styles.sectionTitle}>Credits</Text>
           <Text style={styles.creditText}>
             Built with React Native and other open source technologies.
           </Text>
-        </View>
+        </View> */}
       </ScrollView>
     </View>
   );
@@ -134,29 +136,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
   },
-  header: {
-    width: '100%',
-    height: height * 0.08,
-    backgroundColor: globalStyles.primaryColor.color,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 15,
-    paddingTop: 10,
+header: {
+  width: '100%',
+  paddingTop: StatusBar.currentHeight, // This adds padding for the status bar
+  height: (height * 0.08) + StatusBar.currentHeight, // Add status bar height to your existing height
+  backgroundColor: globalStyles.primaryColor.color,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingHorizontal: 15,
+},
+  backIcon: { 
+    width: width * 0.06, 
+    height: width * 0.06, 
+    resizeMode: 'contain', 
+    tintColor: '#fff' 
   },
-  backButton: {
-    padding: 8
-  },
-  backIcon: {
-    width: width * 0.06,
-    height: width * 0.06,
-    tintColor: '#fff'
-  },
-  headerTitle: {
-    color: '#fff',
-    fontSize: width * 0.05,
-    fontWeight: 'bold'
-  },
+headerTitle: {
+  color: 'white',
+  fontSize: width * 0.05,
+  fontWeight: 'bold',
+  flex: 1,
+  textAlign: 'center',
+},
   headerRightPlaceholder: {
     width: width * 0.06
   },

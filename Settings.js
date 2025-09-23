@@ -8,81 +8,83 @@ import {
   ScrollView,
   Dimensions,
   Switch,
-  StatusBar
+  StatusBar,
+  Modal,
+  TextInput,
+  Alert
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import globalStyles from './globalStyles';
-import { Modal, TextInput, Alert } from 'react-native';
+
 
 const { width, height } = Dimensions.get('window');
 
 export default function Settings({ navigation }) {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [showSupportModal, setShowSupportModal] = useState(false);
-    const [supportEmail, setSupportEmail] = useState("ryan.mitchell@email.com"); // from profile
-    const [subject, setSubject] = useState("");
-    const [message, setMessage] = useState("");
+  const [supportEmail, setSupportEmail] = useState("ryan.mitchell@email.com");
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
 
   const handleBack = () => {
     navigation.navigate('Home');
   };
 
-const settingsOptions = [
-  {
-    id: 'profile',
-    title: 'Profile Settings',
-    icon: require('./assets/profile-setting.png'),
-    description: 'Update your personal information',
-    action: () => navigation.navigate('Profile')
-  },
-  {
-    id: 'notifications',
-    title: 'Notifications',
-    icon: require('./assets/notification.png'),
-    description: 'Manage your notification preferences',
-    hasSwitch: true,
-    switchValue: notificationsEnabled,
-    onSwitchChange: setNotificationsEnabled
-  },
-{
-  id: 'privacy',
-  title: 'Privacy & Security',
-  icon: require('./assets/privacy-policy.png'),
-  description: 'Control your data privacy settings',
-  action: () => navigation.navigate('PrivacySecurity') // Create a new screen
-},
-{
-  id: 'help',
-  title: 'Help & Support',
-  icon: require('./assets/help.png'),
-  description: 'Get help and contact support',
-  action: () => setShowSupportModal(true) // open modal
-},
-{
-  id: 'about',
-  title: 'About App',
-  icon: require('./assets/information.png'),
-  description: 'App version and information',
-  value: 'v1.0',
-  action: () => navigation.navigate('AboutApp') // Create a new screen
-}
-];
-
+  const settingsOptions = [
+    {
+      id: 'profile',
+      title: 'Profile Settings',
+      icon: require('./assets/profile-setting.png'),
+      description: 'Update your personal information',
+      action: () => navigation.navigate('Profile')
+    },
+    {
+      id: 'notifications',
+      title: 'Notifications',
+      icon: require('./assets/notification.png'),
+      description: 'Manage your notification preferences',
+      hasSwitch: true,
+      switchValue: notificationsEnabled,
+      onSwitchChange: setNotificationsEnabled
+    },
+    {
+      id: 'privacy',
+      title: 'Privacy & Security',
+      icon: require('./assets/privacy-policy.png'),
+      description: 'Control your data privacy settings',
+      action: () => navigation.navigate('PrivacySecurity')
+    },
+    {
+      id: 'help',
+      title: 'Help & Support',
+      icon: require('./assets/help.png'),
+      description: 'Get help and contact support',
+      action: () => setShowSupportModal(true)
+    },
+    {
+      id: 'about',
+      title: 'About App',
+      icon: require('./assets/information.png'),
+      description: 'App version and information',
+      value: 'v1.0',
+      action: () => navigation.navigate('AboutApp')
+    }
+  ];
 
   return (
     <View style={styles.container}>
       <StatusBar backgroundColor={globalStyles.primaryColor.color} barStyle="light-content" />
       
       {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-          <Image 
-            source={require('./assets/icon_back.png')} 
-            style={styles.backIcon} 
-          />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Settings</Text>
-        <View style={styles.headerRightPlaceholder} />
-      </View>
+<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>Settings</Text>
+
+  </View>
+</SafeAreaView>
 
       {/* Content */}
       <ScrollView 
@@ -119,14 +121,13 @@ const settingsOptions = [
               onPress={item.action}
               activeOpacity={0.7}
             >
-            <View style={styles.optionLeft}>
-              <Image source={item.icon} style={styles.optionIcon} />
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>{item.title}</Text>
-                <Text style={styles.optionDescription}>{item.description}</Text>
+              <View style={styles.optionLeft}>
+                <Image source={item.icon} style={styles.optionIcon} />
+                <View style={styles.optionTextContainer}>
+                  <Text style={styles.optionTitle}>{item.title}</Text>
+                  <Text style={styles.optionDescription}>{item.description}</Text>
+                </View>
               </View>
-            </View>
-
               
               <View style={styles.optionRight}>
                 {item.value && (
@@ -166,86 +167,85 @@ const settingsOptions = [
       </ScrollView>
 
       <Modal
-  transparent={true}
-  visible={showSupportModal}
-  animationType="slide"
-  onRequestClose={() => setShowSupportModal(false)}
->
-  <View style={styles.modalOverlay}>
-    <View style={styles.modalContainer}>
-      <Text style={styles.modalTitle}>Contact Support</Text>
+        transparent={true}
+        visible={showSupportModal}
+        animationType="slide"
+        onRequestClose={() => setShowSupportModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <Text style={styles.modalTitle}>Contact Support</Text>
 
-      {/* Email (read-only) */}
-      <TextInput
-        style={styles.input}
-        value={supportEmail}
-        editable={false}
-      />
+            {/* Email (read-only) */}
+            <TextInput
+              style={styles.input}
+              value={supportEmail}
+              editable={false}
+            />
 
-      {/* Subject */}
-      <TextInput
-        style={styles.input}
-        placeholder="Subject (optional)"
-        value={subject}
-        onChangeText={setSubject}
-      />
+            {/* Subject */}
+            <TextInput
+              style={styles.input}
+              placeholder="Subject (optional)"
+              value={subject}
+              onChangeText={setSubject}
+            />
 
-      {/* Message */}
-      <TextInput
-        style={[styles.input, styles.messageBox]}
-        placeholder="Enter your message"
-        value={message}
-        onChangeText={setMessage}
-        multiline
-      />
+            {/* Message */}
+            <TextInput
+              style={[styles.input, styles.messageBox]}
+              placeholder="Enter your message"
+              value={message}
+              onChangeText={setMessage}
+              multiline
+            />
 
-      {/* Buttons */}
-      <View style={styles.modalButtons}>
-        <TouchableOpacity
-          style={styles.cancelButton}
-          onPress={() => setShowSupportModal(false)}
-        >
-          <Text style={styles.buttonText}>Cancel</Text>
-        </TouchableOpacity>
+            {/* Buttons */}
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => setShowSupportModal(false)}
+              >
+                <Text style={styles.buttonText}>Cancel</Text>
+              </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.sendButton}
-          onPress={async () => {
-            if (!message.trim()) {
-              Alert.alert("Error", "Message is required.");
-              return;
-            }
+              <TouchableOpacity
+                style={styles.sendButton}
+                onPress={async () => {
+                  if (!message.trim()) {
+                    Alert.alert("Error", "Message is required.");
+                    return;
+                  }
 
-            try {
-              // 🔹 Call backend API here to send email
-              // Example:
-              // await fetch("https://your-backend.com/send-support-email", {
-              //   method: "POST",
-              //   headers: { "Content-Type": "application/json" },
-              //   body: JSON.stringify({
-              //     to: "info@twentytwohealth.com",
-              //     from: supportEmail,
-              //     subject,
-              //     message
-              //   })
-              // });
+                  try {
+                    // 🔹 Call backend API here to send email
+                    // Example:
+                    // await fetch("https://your-backend.com/send-support-email", {
+                    //   method: "POST",
+                    //   headers: { "Content-Type": "application/json" },
+                    //   body: JSON.stringify({
+                    //     to: "info@twentytwohealth.com",
+                    //     from: supportEmail,
+                    //     subject,
+                    //     message
+                    //   })
+                    // });
 
-              Alert.alert("Success", "Your message has been sent.");
-              setShowSupportModal(false);
-              setSubject("");
-              setMessage("");
-            } catch (error) {
-              Alert.alert("Error", "Failed to send message.");
-            }
-          }}
-        >
-          <Text style={styles.buttonText}>Send</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  </View>
-</Modal>
-
+                    Alert.alert("Success", "Your message has been sent.");
+                    setShowSupportModal(false);
+                    setSubject("");
+                    setMessage("");
+                  } catch (error) {
+                    Alert.alert("Error", "Failed to send message.");
+                  }
+                }}
+              >
+                <Text style={styles.buttonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -255,29 +255,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa'
   },
-  header: {
-    width: '100%',
-    height: height * 0.08,
-    backgroundColor: globalStyles.primaryColor.color,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: width * 0.04,
-    paddingTop: height * 0.01,
+header: {
+  width: '100%',
+  paddingTop: StatusBar.currentHeight, // This adds padding for the status bar
+  height: (height * 0.08) + StatusBar.currentHeight, // Add status bar height to your existing height
+  backgroundColor: globalStyles.primaryColor.color,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingHorizontal: 15,
+},
+  backIcon: { 
+    width: width * 0.06, 
+    height: width * 0.06, 
+    resizeMode: 'contain', 
+    tintColor: '#fff' 
   },
-  backButton: {
-    padding: width * 0.02
-  },
-  backIcon: {
-    width: width * 0.06,
-    height: width * 0.06,
-    tintColor: '#fff'
-  },
-  headerTitle: {
-    color: '#fff',
-    fontSize: width * 0.05,
-    fontWeight: 'bold'
-  },
+headerTitle: {
+  color: 'white',
+  fontSize: width * 0.05,
+  fontWeight: 'bold',
+  flex: 1,
+  textAlign: 'center',
+},
   headerRightPlaceholder: {
     width: width * 0.06
   },
@@ -285,16 +285,16 @@ const styles = StyleSheet.create({
     flex: 1
   },
   scrollContent: {
-    paddingBottom: height * 0.05
+    paddingBottom: height * 0.03
   },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    marginHorizontal: width * 0.05,
+    marginHorizontal: width * 0.04,
     marginTop: height * 0.03,
-    padding: width * 0.05,
-    borderRadius: 16,
+    padding: width * 0.04,
+    borderRadius: 12,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -305,22 +305,22 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   profileImage: {
-    width: width * 0.15,
-    height: width * 0.15,
-    borderRadius: width * 0.075,
+    width: width * 0.14,
+    height: width * 0.14,
+    borderRadius: width * 0.07,
     marginRight: width * 0.04
   },
   profileInfo: {
     flex: 1
   },
   userName: {
-    fontSize: width * 0.045,
+    fontSize: width * 0.042,
     fontWeight: 'bold',
     color: '#2c3e50',
     marginBottom: 4
   },
   userEmail: {
-    fontSize: width * 0.035,
+    fontSize: width * 0.034,
     color: '#7f8c8d',
     marginBottom: 2
   },
@@ -330,9 +330,9 @@ const styles = StyleSheet.create({
   },
   editButton: {
     backgroundColor: globalStyles.primaryColor.color,
-    paddingHorizontal: width * 0.04,
+    paddingHorizontal: width * 0.035,
     paddingVertical: height * 0.008,
-    borderRadius: 20
+    borderRadius: 18
   },
   editButtonText: {
     color: '#fff',
@@ -341,7 +341,7 @@ const styles = StyleSheet.create({
   },
   settingsSection: {
     marginTop: height * 0.03,
-    marginHorizontal: width * 0.05
+    marginHorizontal: width * 0.04
   },
   sectionTitle: {
     fontSize: width * 0.04,
@@ -361,8 +361,8 @@ const styles = StyleSheet.create({
   },
   lastOptionCard: {
     borderBottomWidth: 0,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10
   },
   optionLeft: {
     flexDirection: 'row',
@@ -372,14 +372,14 @@ const styles = StyleSheet.create({
   optionIcon: {
     width: width * 0.06,
     height: width * 0.06,
-    marginRight: width * 0.04,
+    marginRight: width * 0.035,
     tintColor: '#014e6b'
   },
   optionTextContainer: {
     flex: 1
   },
   optionTitle: {
-    fontSize: width * 0.04,
+    fontSize: width * 0.038,
     fontWeight: '600',
     color: '#2c3e50',
     marginBottom: 4
@@ -393,13 +393,13 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   optionValue: {
-    fontSize: width * 0.035,
+    fontSize: width * 0.034,
     color: '#7f8c8d',
-    marginRight: width * 0.03
+    marginRight: width * 0.025
   },
   chevronIcon: {
-    width: width * 0.04,
-    height: width * 0.04,
+    width: width * 0.035,
+    height: width * 0.035,
     tintColor: '#bdc3c7'
   },
   versionContainer: {
@@ -408,35 +408,38 @@ const styles = StyleSheet.create({
     marginBottom: height * 0.02
   },
   versionText: {
-    fontSize: width * 0.038,
+    fontSize: width * 0.035,
     color: '#7f8c8d',
-    marginBottom: 4
+    marginBottom: 4,
+    textAlign: 'center'
   },
   versionNumber: {
-    fontSize: width * 0.032,
-    color: '#bdc3c7'
+    fontSize: width * 0.03,
+    color: '#bdc3c7',
+    textAlign: 'center'
   },
   logoutButton: {
     backgroundColor: '#e74c3c',
-    marginHorizontal: width * 0.05,
-    paddingVertical: height * 0.02,
-    borderRadius: 12,
+    marginHorizontal: width * 0.04,
+    paddingVertical: height * 0.018,
+    borderRadius: 10,
     alignItems: 'center',
     marginTop: height * 0.02
   },
   logoutButtonText: {
     color: '#fff',
-    fontSize: width * 0.04,
+    fontSize: width * 0.038,
     fontWeight: 'bold'
   },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
-    alignItems: 'center'
+    alignItems: 'center',
+    padding: width * 0.05
   },
   modalContainer: {
-    width: width * 0.85,
+    width: '100%',
     maxWidth: 400,
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -447,7 +450,8 @@ const styles = StyleSheet.create({
     fontSize: width * 0.045,
     fontWeight: 'bold',
     marginBottom: height * 0.02,
-    color: '#2c3e50'
+    color: '#2c3e50',
+    textAlign: 'center'
   },
   input: {
     borderWidth: 1,

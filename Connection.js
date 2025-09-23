@@ -1,4 +1,3 @@
-//Connection.js
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -11,7 +10,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Dimensions,
-  SafeAreaView,
   ActivityIndicator,
   Alert,
   StatusBar,
@@ -20,6 +18,7 @@ import globalStyles from './globalStyles';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createStackNavigator } from '@react-navigation/stack';
 import io from "socket.io-client";
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -30,7 +29,7 @@ function ConversationsList({ navigation }) {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const API_BASE = 'http://50.18.96.20/rpm-be/api/messages';
+  const API_BASE = 'https://rmtrpm.duckdns.org/rpm-be/api/messages';
 
   const handleBack = () => {
     navigation.navigate('Home');
@@ -50,8 +49,7 @@ function ConversationsList({ navigation }) {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-        //   Cookie: `token=${token}; refresh_token=${refreshToken}`,
-        // Cookie: `token=I_AM_REVIVE_MEDICAL_TECHNOLOGIES; refresh_token=${refreshToken}`,
+          // Cookie: `token=${token}; refresh_token=${refreshToken}`,
         },
       });
 
@@ -125,32 +123,37 @@ function ConversationsList({ navigation }) {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-            <Image
-              source={require('./assets/icon_back.png')}
-              style={styles.backIcon}
-            />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Messages</Text>
-          <View style={styles.headerRightPlaceholder} />
-        </View>
+      <View style={styles.container}>
+            <SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>Messages</Text>
+
+  </View>
+</SafeAreaView>
         <ActivityIndicator
           size="large"
           color={globalStyles.primaryColor.color}
           style={styles.loader}
         />
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor={globalStyles.primaryColor.color} barStyle="light-content" />
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Messages</Text>
-      </View>
+    <View style={styles.container}>
+      
+<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>Messages</Text>
+
+  </View>
+</SafeAreaView>
 
       <FlatList
         data={conversations}
@@ -168,7 +171,7 @@ function ConversationsList({ navigation }) {
           </View>
         }
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -187,7 +190,7 @@ function ChatScreen({ navigation, route }) {
   const receiverId = route?.params?.receiverId || 3;
   const receiverName = route?.params?.receiverName || 'Dr. Amir';
 
-  const API_BASE = 'http://50.18.96.20/rpm-be/api/messages';
+  const API_BASE = 'https://rmtrpm.duckdns.org/rpm-be/api/messages';
 
   // Socket connection
   useEffect(() => {
@@ -195,11 +198,11 @@ function ChatScreen({ navigation, route }) {
     const initSocket = async () => {
       const token = await AsyncStorage.getItem("token");
 
-      newSocket = io("http://50.18.96.20", {
+      newSocket = io("https://rmtrpm.duckdns.org", {
         path: "/rpm-be/socket.io/",
         withCredentials: true,
         extraHeaders: {
-        //   Cookie: `token=${token}`,
+          Cookie: `token=${token}`,
         },
         transports: ["websocket"],
       });
@@ -247,8 +250,10 @@ function ChatScreen({ navigation, route }) {
   }, [socket, socketConnected, receiverId]);
 
   const handleBack = () => {
-    navigation.navigate('Home');
-  };
+    navigation.goBack();
+  }
+
+
 
   // Fetch messages history
   const fetchMessages = async () => {
@@ -268,7 +273,7 @@ function ChatScreen({ navigation, route }) {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-        //   Cookie: `token=${token}; refresh_token=${refreshToken};`,
+          // Cookie: `token=${token}; refresh_token=${refreshToken};`,
         },
       });
 
@@ -313,7 +318,7 @@ function ChatScreen({ navigation, route }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-        //   Cookie: `token=${token}; refresh_token=${refreshToken}`,
+          // Cookie: `token=${token}; refresh_token=${refreshToken}`,
         },
         body: JSON.stringify({
           receiverId,
@@ -408,10 +413,10 @@ function ChatScreen({ navigation, route }) {
           <Text style={styles.headerSubtitle}>Online</Text>
         </View>
         <TouchableOpacity style={styles.headerCallButton}>
-          <Image
+          {/* <Image
             style={styles.callIcon}
             source={require('./assets/icon_call.png')}
-          />
+          /> */}
         </TouchableOpacity>
       </View>
 
@@ -508,24 +513,29 @@ export default function Connection({ navigation }) {
 // ------------------- Styles -------------------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
-  header: {
-    width: '100%',
-    height: height * 0.08,
-    backgroundColor: globalStyles.primaryColor.color,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 15,
-    paddingTop: 10,
+header: {
+  width: '100%',
+  paddingTop: StatusBar.currentHeight, // This adds padding for the status bar
+  height: (height * 0.08) + StatusBar.currentHeight, // Add status bar height to your existing height
+  backgroundColor: globalStyles.primaryColor.color,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingHorizontal: 15,
+},
+  backIcon: { 
+    width: width * 0.06, 
+    height: width * 0.06, 
+    resizeMode: 'contain', 
+    tintColor: '#fff' 
   },
-  backButton: { padding: 8, flexDirection: 'row', alignItems: 'center' },
-  backIcon: {
-    width: width * 0.06,
-    height: width * 0.06,
-    tintColor: '#fff'
-  },
-  backText: { color: 'white', marginLeft: 5, fontSize: 16 },
-  headerTitle: { color: '#fff', fontSize: width * 0.05, fontWeight: 'bold' },
+headerTitle: {
+  color: 'white',
+  fontSize: width * 0.05,
+  fontWeight: 'bold',
+  flex: 1,
+  textAlign: 'center',
+},
   headerRightPlaceholder: { width: width * 0.06 },
 
   listContainer: { padding: 10 },

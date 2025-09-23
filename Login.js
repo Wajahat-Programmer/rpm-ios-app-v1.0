@@ -253,7 +253,7 @@ export default function Login({ navigation }) {
   // 🔄 refresh auth token using refresh_token
   const refreshAuthToken = async () => {
     try {
-      const response = await fetch('http://50.18.96.20/rpm-be/api/auth/refresh-token', {
+      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/refresh-token', {
         method: 'POST',
         credentials: 'include',
       });
@@ -296,7 +296,7 @@ export default function Login({ navigation }) {
     setError('');
 
     try {
-      const response = await fetch('http://50.18.96.20/rpm-be/api/auth/login', {
+      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -338,7 +338,7 @@ export default function Login({ navigation }) {
     setError('');
 
     try {
-      const response = await fetch('http://50.18.96.20/rpm-be/api/auth/verify-otp', {
+      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -353,7 +353,7 @@ export default function Login({ navigation }) {
 
       if (response.ok) {
         // ✅ check cookies
-        const cookies = await CookieManager.get('http://50.18.96.20/rpm-be');
+        const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
         console.log("Cookies after OTP:", cookies);
 
         Alert.alert('Success', 'Login successful!', [
@@ -363,7 +363,7 @@ export default function Login({ navigation }) {
           }
         ]);
       }
-      const cookies = await CookieManager.get('http://50.18.96.20/rpm-be');
+      const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
       const accessToken = cookies?.token?.value;
       const refreshToken = cookies?.refresh_token?.value;
 

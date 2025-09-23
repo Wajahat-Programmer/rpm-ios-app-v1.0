@@ -38,15 +38,41 @@ RCT_EXPORT_MODULE();
   }
 }
 
-- (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral
+// - (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral
+//        advertisementData:(NSDictionary<NSString *,id> *)advertisementData
+//                     RSSI:(NSNumber *)RSSI {
+
+// if ([peripheral.name hasPrefix:@"Viatom"] ||
+//     [peripheral.name hasPrefix:@"ER1"] ||
+//     [peripheral.name hasPrefix:@"ER2"] ||
+//     [peripheral.name hasPrefix:@"BP2A"]) {
+//     if (![self.discoveredPeripherals containsObject:peripheral]) {
+//       [self.discoveredPeripherals addObject:peripheral];
+//       [self sendEventWithName:@"onDeviceDiscovered"
+//                          body:@{@"name": peripheral.name ?: @"Unknown",
+//                                 @"id": peripheral.identifier.UUIDString}];
+//     }
+//   }
+// }
+
+- (void)centralManager:(CBCentralManager *)central
+   didDiscoverPeripheral:(CBPeripheral *)peripheral
        advertisementData:(NSDictionary<NSString *,id> *)advertisementData
                     RSSI:(NSNumber *)RSSI {
 
-  if ([peripheral.name hasPrefix:@"Viatom"] || [peripheral.name hasPrefix:@"ER1"] || [peripheral.name hasPrefix:@"ER2"]) {
+  NSString *deviceName = peripheral.name ?: advertisementData[CBAdvertisementDataLocalNameKey];
+
+  NSLog(@"Discovered device: %@ (%@)", deviceName, peripheral.identifier.UUIDString);
+
+  if ([deviceName hasPrefix:@"Viatom"] ||
+      [deviceName hasPrefix:@"ER1"] ||
+      [deviceName hasPrefix:@"ER2"] ||
+      [deviceName hasPrefix:@"BP2A"]) {
+
     if (![self.discoveredPeripherals containsObject:peripheral]) {
       [self.discoveredPeripherals addObject:peripheral];
       [self sendEventWithName:@"onDeviceDiscovered"
-                         body:@{@"name": peripheral.name ?: @"Unknown",
+                         body:@{@"name": deviceName ?: @"Unknown",
                                 @"id": peripheral.identifier.UUIDString}];
     }
   }
@@ -85,7 +111,7 @@ RCT_EXPORT_MODULE();
   NSLog(@"Device Info: type=%d fw=%u", info.device_type, info.fw_version);
 
   if (info.device_type == 0x8611) { // Example BP2
-    [self.viatomUtils requestBPRealData];
+    [self.viatomUtils requestChangeBPState:0]; // 0 = enter blood pressure measurement
   } else {
     [self.viatomUtils requestECGRealData];
   }
@@ -99,9 +125,25 @@ RCT_EXPORT_MODULE();
     @"waveform": [self arrayFromWave:data.waveform]
   }];
 }
+// ✅ Live cuff pressure during measurement
+- (void)realTimeBPData:(VTMBPMeasuringData)data {
+  [self sendEventWithName:@"onRealTimeData" body:@{
+    @"type": @"BP_PROGRESS",
+    @"pressure": @(data.pressure)
+  }];
+}
+
 
 // ✅ Fixed: use systolic_pressure, diastolic_pressure, pulse_rate
-- (void)realTimeBPData:(VTMBPEndMeasureData)data {
+// - (void)realTimeBPData:(VTMBPEndMeasureData)data {
+//   [self sendEventWithName:@"onRealTimeData" body:@{
+//     @"type": @"BP",
+//     @"systolic": @(data.systolic_pressure),
+//     @"diastolic": @(data.diastolic_pressure),
+//     @"pulse": @(data.pulse_rate)
+//   }];
+// }
+- (void)bpMeasuringResult:(VTMBPEndMeasureData)data {
   [self sendEventWithName:@"onRealTimeData" body:@{
     @"type": @"BP",
     @"systolic": @(data.systolic_pressure),
@@ -152,6 +194,12 @@ RCT_EXPORT_METHOD(connectToDevice:(NSString *)deviceId) {
 RCT_EXPORT_METHOD(disconnectDevice) {
   if (self.connectedPeripheral) {
     [self.centralManager cancelPeripheralConnection:self.connectedPeripheral];
+  }
+}
+
+RCT_EXPORT_METHOD(startBPMeasurement) {
+  if (self.viatomUtils) {
+    [self.viatomUtils requestChangeBPState:0];
   }
 }
 

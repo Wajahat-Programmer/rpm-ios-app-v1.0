@@ -10,8 +10,12 @@ import {
   TextInput,
   StatusBar,
   Alert,
+  Platform, 
+  
+  
   Switch
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import globalStyles from './globalStyles';
 
 const { width, height } = Dimensions.get('window');
@@ -92,21 +96,23 @@ export default function Profile({ navigation }) {
       <StatusBar backgroundColor={globalStyles.primaryColor.color} barStyle="light-content" />
       
       {/* Header - Updated to match BloodPressure.js */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack}>
-          <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Profile</Text>
-        {isEditing ? (
-          <TouchableOpacity onPress={handleSave} style={styles.saveButton}>
-            <Text style={styles.saveButtonText}>Save</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity onPress={handleEdit} style={styles.editButton}>
-            <Text style={styles.editButtonText}>Edit</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+  <View style={styles.header}>
+    <TouchableOpacity onPress={handleBack}>
+      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+    </TouchableOpacity>
+    <Text style={styles.headerTitle}>Profile</Text>
+    {isEditing ? (
+      <TouchableOpacity onPress={handleSave} style={styles.saveButton}>
+        <Text style={styles.saveButtonText}>Save</Text>
+      </TouchableOpacity>
+    ) : (
+      <TouchableOpacity onPress={handleEdit} style={styles.editButton}>
+        <Text style={styles.editButtonText}>Edit</Text>
+      </TouchableOpacity>
+    )}
+  </View>
+</SafeAreaView>
 
       <ScrollView 
         style={styles.scrollView}
@@ -159,16 +165,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa'
   },
   // Updated header to match BloodPressure.js
-  header: {
-    width: '100%',
-    height: height * 0.08,
-    backgroundColor: globalStyles.primaryColor.color,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 15,
-    paddingTop: 10,
-  },
+// Replace your header style with this:
+header: {
+  width: '100%',
+  paddingTop: StatusBar.currentHeight, // This adds padding for the status bar
+  height: (height * 0.08) + StatusBar.currentHeight, // Add status bar height to your existing height
+  backgroundColor: globalStyles.primaryColor.color,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingHorizontal: 15,
+},
   backIcon: { 
     width: width * 0.06, 
     height: width * 0.06, 
