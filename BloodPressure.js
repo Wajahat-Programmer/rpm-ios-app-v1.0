@@ -372,17 +372,20 @@ function BPMChart({width, data}) {
   );
 }
 
-export default function BloodPressure({navigation}) {
+export default function BloodPressure({ navigation }) {
   const [activeTab, setActiveTab] = useState('LIST');
   const [devices, setDevices] = useState([]);
   const [connectedDevice, setConnectedDevice] = useState(null);
+
   const [realTimeData, setRealTimeData] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [isMeasuring, setIsMeasuring] = useState(false);
+
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
+
   const toastTimeoutRef = useRef(null);
   const measurementTimeoutRef = useRef(null);
 
@@ -390,28 +393,59 @@ export default function BloodPressure({navigation}) {
   const [bloodPressureData, setBloodPressureData] = useState([]);
 
   useEffect(() => {
+    // --- Device discovery
     const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
-      setDevices(prev => {
-        // Avoid duplicates
-        if (!prev.find(d => d.id === device.id)) {
-          return [...prev, device];
-        }
-        return prev;
-      });
+      console.log('[BLE] Discovered:', device);
+      setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
     });
 
+    // --- Connection
     const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
+      console.log('[BLE] Connected:', device);
       setConnectedDevice(device);
     });
 
-    const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', () => {
+    const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
+      console.log('[BLE] Disconnected:', payload);
       setConnectedDevice(null);
       setRealTimeData(null);
+      setIsMeasuring(false);
+      if (measurementTimeoutRef.current) {
+        clearTimeout(measurementTimeoutRef.current);
+        measurementTimeoutRef.current = null;
+      }
     });
 
+    // --- Real-time data (progress + final)
     const dataSubscription = ViatomDeviceManager.addListener('onRealTimeData', (data) => {
-      console.log('Real-time data received:', data);
+      console.log('[DATA] onRealTimeData:', data);
       handleRealTimeData(data);
+    });
+
+    // --- BP mode state
+    const modeSubscription = ViatomDeviceManager.addListener('onBPModeChanged', (payload) => {
+      console.log('[BP] Mode changed:', payload);
+      if (payload?.active === false) {
+        setIsMeasuring(false);
+      }
+    });
+
+    // --- BP status (started/ending / snapshots)
+    const statusSubscription = ViatomDeviceManager.addListener('onBPStatusChanged', (payload) => {
+      console.log('[BP] Status:', payload);
+      if (payload?.status === 'measurement_started') {
+        showToastMessage('Measurement started');
+        setIsMeasuring(true);
+      } else if (payload?.status === 'measurement_ending') {
+        showToastMessage('Finishing up…');
+      }
+    });
+
+    // --- Errors
+    const errorSubscription = ViatomDeviceManager.addListener('onDeviceError', (err) => {
+      console.warn('[BP] Error:', err);
+      showToastMessage(err?.message || err?.error || 'Device error');
+      setIsMeasuring(false);
     });
 
     return () => {
@@ -419,101 +453,100 @@ export default function BloodPressure({navigation}) {
       connectionSubscription.remove();
       disconnectionSubscription.remove();
       dataSubscription.remove();
-      
-      if (toastTimeoutRef.current) {
-        clearTimeout(toastTimeoutRef.current);
-      }
-      if (measurementTimeoutRef.current) {
-        clearTimeout(measurementTimeoutRef.current);
-      }
+      modeSubscription.remove();
+      statusSubscription.remove();
+      errorSubscription.remove();
+
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      if (measurementTimeoutRef.current) clearTimeout(measurementTimeoutRef.current);
     };
   }, []);
 
   const showToastMessage = (message, duration = 2000) => {
-    if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
-    }
-    
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage(message);
     setShowToast(true);
-    
-    toastTimeoutRef.current = setTimeout(() => {
-      setShowToast(false);
-    }, duration);
+    toastTimeoutRef.current = setTimeout(() => setShowToast(false), duration);
   };
 
   const handleRealTimeData = (data) => {
-  console.log("Realtime Data:", data);
+    if (!data || !data.type) return;
 
-  if (data.type === "BP_PROGRESS") {
-    // Show progress while cuff is inflating/deflating
-    setRealTimeData(data);
-    setIsMeasuring(true);
+    // Small cue from native when live stream requested
+    if (data.type === 'BP_REALDATA_REQUESTED') {
+      showToastMessage(data.message || 'Request real data.');
+      setIsMeasuring(true);
+      return;
+    }
 
-  } else if (data.type === "BP") {
-    // ✅ Final result received → stop measuring immediately
-    stopMeasurement();
+    // Live progress
+    if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+      // pressure is normalized to mmHg in native
+      setRealTimeData({
+        type: 'BP_PROGRESS',
+        pressure: Number(data.pressure) || 0,
+        isDeflating: !!data.isDeflating,
+        hasPulse: !!data.hasPulse,
+        pulseRate: Number(data.pulseRate) || 0,
+      });
+      setIsMeasuring(true);
+      return;
+    }
 
-    const newReading = {
-      date: new Date().toLocaleDateString(),
-      time: new Date().toLocaleTimeString(),
-      systolic: data.systolic,
-      diastolic: data.diastolic,
-      bpm: data.pulse, 
-    };
+    // Final result
+    if (data.type === 'BP') {
+      // Stop measuring in UI immediately
+      stopMeasurementUIOnly();
 
-    setBloodPressureData((prevData) => [newReading, ...prevData].slice(0, 7));
-    showToastMessage(
-      `Measurement: ${data.systolic}/${data.diastolic} mmHg, Pulse: ${data.pulse} BPM`,
-      3000
-    );
+      const now = new Date();
+      const newReading = {
+        id: Date.now(), // ensure stable key in list
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString(),
+        systolic: Number(data.systolic),
+        diastolic: Number(data.diastolic),
+        bpm: Number(data.pulse),
+        mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
+      };
 
-    // Update current real-time panel with the final result
-    setRealTimeData(data);
-  }
-};
+      setBloodPressureData((prev) => [newReading, ...prev].slice(0, 20));
+      showToastMessage(
+        `Measurement: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+        3000
+      );
 
+      // Update the real-time panel with final result
+      setRealTimeData({
+        type: 'BP',
+        systolic: newReading.systolic,
+        diastolic: newReading.diastolic,
+        pulse: newReading.bpm,
+        mean: newReading.mean,
+      });
 
-  // const handleRealTimeData = (data) => {
-  //   setRealTimeData(data);
-    
-  //   if (data.type === 'BP') {
-  //     // Final BP result
-  //     const newReading = {
-  //       id: Date.now(),
-  //       date: new Date().toLocaleDateString('en-US', { 
-  //         month: 'short', 
-  //         day: 'numeric', 
-  //         year: 'numeric' 
-  //       }),
-  //       time: new Date().toLocaleTimeString('en-US', { 
-  //         hour: '2-digit', 
-  //         minute: '2-digit' 
-  //       }),
-  //       systolic: Number(data.systolic),
-  //       diastolic: Number(data.diastolic),
-  //       bpm: Number(data.pulse),
-  //       result: 0 // You can add logic to determine result based on values
-  //     };
+      return;
+    }
 
-  //     setBloodPressureData((prev) => {
-  //       const next = [newReading, ...prev].slice(0, 7);
-  //       return next;
-  //     });
+    // Optional: handle BP_STATUS if you want to render it
+    if (data.type === 'BP_STATUS') {
+      // console.log('[BP] Run Status snapshot:', data);
+      return;
+    }
 
-  //     setIsMeasuring(false);
-  //     showToastMessage(`Measurement: ${data.systolic}/${data.diastolic} mmHg, Pulse: ${data.pulse} BPM`, 3000);
-  //   } 
-  //   else if (data.type === 'BP_PROGRESS') {
-  //     // Measurement in progress
-  //     setIsMeasuring(true);
-  //     if (data.pressure > 0) {
-  //       showToastMessage('Measurement in progress...');
-  //     }
-  //   }
-  // };
+    // ECG or other types can be ignored here
+  };
+
+  // Only update UI flags/timeouts here (native already exits BP mode)
+  const stopMeasurementUIOnly = () => {
+    if (measurementTimeoutRef.current) {
+      clearTimeout(measurementTimeoutRef.current);
+      measurementTimeoutRef.current = null;
+    }
+    setIsMeasuring(false);
+  };
 
   const startScanning = () => {
+    console.log('[BLE] Start scanning');
     setDevices([]);
     setIsScanning(true);
     ViatomDeviceManager.startScan();
@@ -524,53 +557,56 @@ export default function BloodPressure({navigation}) {
   };
 
   const stopScanning = () => {
+    console.log('[BLE] Stop scanning');
     setIsScanning(false);
     ViatomDeviceManager.stopScan();
   };
 
   const connectToDevice = (deviceId) => {
+    console.log('[BLE] Connect to:', deviceId);
     ViatomDeviceManager.connectToDevice(deviceId);
   };
 
   const disconnectDevice = () => {
+    console.log('[BLE] Disconnect');
     ViatomDeviceManager.disconnectDevice();
     setConnectedDevice(null);
     setRealTimeData(null);
+    setIsMeasuring(false);
   };
 
-const startMeasurement = () => {
-  if (!connectedDevice) {
-    Alert.alert('Error', 'Please connect to a device first');
-    return;
-  }
+  const startMeasurement = () => {
+    if (!connectedDevice) {
+      Alert.alert('Error', 'Please connect to a device first');
+      return;
+    }
 
-  setIsMeasuring(true);
-  ViatomDeviceManager.startBPMeasurement();
+    // Reset panel
+    setRealTimeData(null);
+    setIsMeasuring(true);
 
-  // Clear any existing timeout before starting a new one
-  if (measurementTimeoutRef.current) {
-    clearTimeout(measurementTimeoutRef.current);
-  }
+    console.log('[BP] Starting measurement (native will request live stream)');
+    ViatomDeviceManager.startBPMeasurement();
 
-  // Set a timeout to prevent infinite measurement (2 minutes)
-  measurementTimeoutRef.current = setTimeout(() => {
-    Alert.alert(
-      'Measurement Timeout',
-      'The measurement took too long. Please check device connection and try again.'
-    );
-    setIsMeasuring(false);
-    measurementTimeoutRef.current = null;
-  }, 120000);
-};
+    // (optional) ask for a status snapshot in parallel
+    ViatomDeviceManager.requestBPRunStatus?.();
 
+    // Align with native timeout (3 minutes)
+    if (measurementTimeoutRef.current) clearTimeout(measurementTimeoutRef.current);
+    measurementTimeoutRef.current = setTimeout(() => {
+      Alert.alert(
+        'Measurement Timeout',
+        'The measurement took too long. Please check device connection and try again.'
+      );
+      setIsMeasuring(false);
+      measurementTimeoutRef.current = null;
+    }, 180000);
+  };
 
   const stopMeasurement = () => {
-    if (measurementTimeoutRef.current) {
-      clearTimeout(measurementTimeoutRef.current);
-      measurementTimeoutRef.current = null;
-    }
-    
-    setIsMeasuring(false);
+    console.log('[BP] Stop measurement (user action)');
+    ViatomDeviceManager.stopBPMeasurement();
+    stopMeasurementUIOnly();
   };
 
   const handleBack = () => navigation?.navigate?.('Home');
@@ -580,18 +616,16 @@ const startMeasurement = () => {
       visible={showDeviceModal}
       transparent
       animationType="slide"
-      onRequestClose={() => setShowDeviceModal(false)}>
+      onRequestClose={() => setShowDeviceModal(false)}
+    >
       <View style={styles.modalContainer}>
         <View style={styles.modalContent}>
           <Text style={styles.modalTitle}>Connect to BP Device</Text>
 
           {isLoading ? (
-            <View style={{alignItems: 'center', padding: 20}}>
-              <ActivityIndicator
-                size="large"
-                color={globalStyles.primaryColor.color}
-              />
-              <Text style={{marginTop: 10}}>Connecting...</Text>
+            <View style={{ alignItems: 'center', padding: 20 }}>
+              <ActivityIndicator size="large" color={globalStyles.primaryColor.color} />
+              <Text style={{ marginTop: 10 }}>Connecting...</Text>
             </View>
           ) : (
             <>
@@ -605,56 +639,31 @@ const startMeasurement = () => {
 
               {!connectedDevice && (
                 <>
-                  <ScrollView
-                    style={{maxHeight: 200, width: '100%', marginVertical: 10}}>
+                  <ScrollView style={{ maxHeight: 200, width: '100%', marginVertical: 10 }}>
                     {devices.length === 0 ? (
-                      <Text
-                        style={{
-                          textAlign: 'center',
-                          color: '#666',
-                          marginVertical: 10,
-                        }}>
-                        {isScanning
-                          ? 'Scanning for devices...'
-                          : 'No devices found. Tap "Scan" to search.'}
+                      <Text style={{ textAlign: 'center', color: '#666', marginVertical: 10 }}>
+                        {isScanning ? 'Scanning for devices...' : 'No devices found. Tap "Scan" to search.'}
                       </Text>
                     ) : (
                       devices.map((d, idx) => (
                         <TouchableOpacity
                           key={`${d.id ?? idx}`}
-                          style={{
-                            padding: 10,
-                            borderBottomWidth: 1,
-                            borderColor: '#eee',
-                          }}
-                          onPress={() => connectToDevice(d.id)}>
-                          <Text style={{fontWeight: '600'}}>
-                            {d.name ?? 'Unknown Device'}
-                          </Text>
-                          {d.id && (
-                            <Text style={{color: '#666', fontSize: 12}}>
-                              {d.id}
-                            </Text>
-                          )}
+                          style={{ padding: 10, borderBottomWidth: 1, borderColor: '#eee' }}
+                          onPress={() => connectToDevice(d.id)}
+                        >
+                          <Text style={{ fontWeight: '600' }}>{d.name ?? 'Unknown Device'}</Text>
+                          {d.id && <Text style={{ color: '#666', fontSize: 12 }}>{d.id}</Text>}
                         </TouchableOpacity>
                       ))
                     )}
                   </ScrollView>
 
-                  {!isScanning && (
-                    <TouchableOpacity
-                      style={styles.connectButton}
-                      onPress={startScanning}>
-                      <Text style={styles.connectButtonText}>
-                        Scan for Devices
-                      </Text>
+                  {!isScanning ? (
+                    <TouchableOpacity style={styles.connectButton} onPress={startScanning}>
+                      <Text style={styles.connectButtonText}>Scan for Devices</Text>
                     </TouchableOpacity>
-                  )}
-
-                  {isScanning && (
-                    <TouchableOpacity
-                      style={styles.cancelButton}
-                      onPress={stopScanning}>
+                  ) : (
+                    <TouchableOpacity style={styles.cancelButton} onPress={stopScanning}>
                       <Text style={styles.cancelButtonText}>Stop Scanning</Text>
                     </TouchableOpacity>
                   )}
@@ -665,11 +674,10 @@ const startMeasurement = () => {
                 style={styles.cancelButton}
                 onPress={() => {
                   setShowDeviceModal(false);
-                  if (isScanning) {
-                    stopScanning();
-                  }
-                }}>
-                <Text style={styles.cancelButtonText}>Cancel</Text>
+                  if (isScanning) stopScanning();
+                }}
+              >
+                <Text style={styles.cancelButtonText}>Close</Text>
               </TouchableOpacity>
             </>
           )}
@@ -683,18 +691,12 @@ const startMeasurement = () => {
       <View
         style={[
           styles.statusIndicator,
-          {backgroundColor: connectedDevice ? '#4CAF50' : '#F44336'},
+          { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
         ]}
       />
-      <Text style={styles.statusText}>
-        {connectedDevice ? 'Connected' : 'Disconnected'}
-      </Text>
-      <TouchableOpacity
-        style={styles.connectButtonSmall}
-        onPress={() => setShowDeviceModal(true)}>
-        <Text style={styles.connectButtonTextSmall}>
-          {connectedDevice ? 'Disconnect' : 'Connect'}
-        </Text>
+      <Text style={styles.statusText}>{connectedDevice ? 'Connected' : 'Disconnected'}</Text>
+      <TouchableOpacity style={styles.connectButtonSmall} onPress={() => setShowDeviceModal(true)}>
+        <Text style={styles.connectButtonTextSmall}>{connectedDevice ? 'Disconnect' : 'Connect'}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -702,21 +704,15 @@ const startMeasurement = () => {
   const renderDeviceControls = () => (
     <View style={styles.controlsContainer}>
       <TouchableOpacity
-        style={[
-          styles.controlButton,
-          isMeasuring && styles.controlButtonActive,
-        ]}
+        style={[styles.controlButton, isMeasuring && styles.controlButtonActive]}
         onPress={isMeasuring ? stopMeasurement : startMeasurement}
-        disabled={!connectedDevice}>
-        <Text style={styles.controlButtonText}>
-          {isMeasuring ? 'Stop Measurement' : 'Start Measurement'}
-        </Text>
+        disabled={!connectedDevice}
+      >
+        <Text style={styles.controlButtonText}>{isMeasuring ? 'Stop Measurement' : 'Start Measurement'}</Text>
       </TouchableOpacity>
 
       {connectedDevice && (
-        <TouchableOpacity
-          style={[styles.controlButton, {minWidth: 100}]}
-          onPress={disconnectDevice}>
+        <TouchableOpacity style={[styles.controlButton, { minWidth: 100 }]} onPress={disconnectDevice}>
           <Text style={styles.controlButtonText}>Disconnect</Text>
         </TouchableOpacity>
       )}
@@ -732,12 +728,35 @@ const startMeasurement = () => {
 
         {/* Live Pressure */}
         {realTimeData.type === 'BP_PROGRESS' && (
-          <View style={styles.measurementRow}>
-            <Text style={styles.measurementLabel}>Current Pressure:&nbsp;</Text>
-            <Text style={styles.measurementValue}>
-              {realTimeData.pressure ?? 0} mmHg
-            </Text>
-          </View>
+          <>
+            <View style={styles.measurementRow}>
+              <Text style={styles.measurementLabel}>Current Pressure:&nbsp;</Text>
+              <Text
+                style={[
+                  styles.measurementValue,
+                  { color: realTimeData.pressure > 0 ? '#e74c3c' : '#95a5a6' },
+                ]}
+              >
+                {realTimeData.pressure ?? 0} mmHg
+              </Text>
+            </View>
+
+            {realTimeData.isDeflating && (
+              <View style={styles.measurementRow}>
+                <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
+                <Text style={[styles.measurementValue, { color: '#f39c12' }]}>Deflating...</Text>
+              </View>
+            )}
+
+            {realTimeData.hasPulse && realTimeData.pulseRate > 0 && (
+              <View style={styles.measurementRow}>
+                <Text style={styles.measurementLabel}>Pulse Detected:&nbsp;</Text>
+                <Text style={[styles.measurementValue, { color: '#27ae60' }]}>
+                  {realTimeData.pulseRate} BPM
+                </Text>
+              </View>
+            )}
+          </>
         )}
 
         {/* Final Result */}
@@ -745,13 +764,21 @@ const startMeasurement = () => {
           <>
             <View style={styles.measurementRow}>
               <Text style={styles.measurementLabel}>Result:&nbsp;</Text>
-              <Text style={styles.measurementValue}>
+              <Text style={[styles.measurementValue, { color: '#2c3e50', fontSize: 18 }]}>
                 {realTimeData.systolic ?? 0}/{realTimeData.diastolic ?? 0} mmHg
               </Text>
             </View>
+
+            {typeof realTimeData.mean === 'number' && (
+              <View style={styles.measurementRow}>
+                <Text style={styles.measurementLabel}>Mean:&nbsp;</Text>
+                <Text style={[styles.measurementValue]}>{realTimeData.mean} mmHg</Text>
+              </View>
+            )}
+
             <View style={styles.measurementRow}>
               <Text style={styles.measurementLabel}>Pulse:&nbsp;</Text>
-              <Text style={styles.measurementValue}>
+              <Text style={[styles.measurementValue, { color: '#27ae60' }]}>
                 {realTimeData.pulse ?? 0} BPM
               </Text>
             </View>
@@ -761,11 +788,10 @@ const startMeasurement = () => {
         {/* Measuring indicator */}
         {isMeasuring && (
           <View style={styles.measuringIndicator}>
-            <ActivityIndicator
-              size="small"
-              color={globalStyles.primaryColor.color}
-            />
-            <Text style={styles.measuringText}>Measurement in progress...</Text>
+            <ActivityIndicator size="small" color={globalStyles.primaryColor.color} />
+            <Text style={styles.measuringText}>
+              {realTimeData?.type === 'BP_PROGRESS' ? 'Measuring…' : 'Measurement in progress…'}
+            </Text>
           </View>
         )}
       </View>
@@ -774,15 +800,14 @@ const startMeasurement = () => {
 
   return (
     <View style={styles.container}>
-<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
-  <View style={styles.header}>
-    <TouchableOpacity onPress={handleBack}>
-      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
-    </TouchableOpacity>
-    <Text style={styles.headerTitle}>Blood Pressure</Text>
-
-  </View>
-</SafeAreaView>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={handleBack}>
+            <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Blood Pressure</Text>
+        </View>
+      </SafeAreaView>
 
       {renderConnectionStatus()}
       {renderDeviceControls()}
