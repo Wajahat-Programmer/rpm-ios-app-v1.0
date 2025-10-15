@@ -31,7 +31,7 @@
 @property (nonatomic, assign) BOOL isWaitingForBPResult;
 @property (nonatomic, strong) NSTimer *measurementTimeoutTimer;
 
-// added to align with deploy-first flow
+// Added to align with deploy-first flow
 @property (nonatomic, assign) BOOL isDeployed;
 @property (nonatomic, assign) BOOL pendingStart;
 @end
@@ -77,7 +77,7 @@ RCT_EXPORT_MODULE();
 
 static inline double vt_normalize_pressure(short raw) {
   int absval = (raw >= 0 ? raw : -raw);
-  if (absval > 1000) { // e.g., 12000 -> 120.00 mmHg
+  if (absval > 1000) {
     return ((double)raw) / 100.0;
   }
   return (double)raw;
@@ -128,12 +128,10 @@ static inline int16_t  vt_s16le(const uint8_t *p) { return (int16_t)(p[0] | (p[1
   [self.centralManager stopScan];
   self.connectedPeripheral = peripheral;
 
-  // Let the SDK receive CoreBluetooth callbacks
   peripheral.delegate = self.viatomUtils;
-
   self.viatomUtils.peripheral = peripheral;
-  self.viatomUtils.delegate = self;       // generic responses come here
-  self.viatomUtils.deviceDelegate = self; // deploy callbacks come here
+  self.viatomUtils.delegate = self;
+  self.viatomUtils.deviceDelegate = self;
 
   self.isDeployed = NO;
   self.pendingStart = NO;
@@ -174,7 +172,6 @@ didFailToConnectPeripheral:(CBPeripheral *)peripheral
   NSLog(@"[SDK] Deploy completed ✅");
   self.isDeployed = YES;
 
-  // Optional: ask basic info/config after deploy
   [self.viatomUtils requestDeviceInfo];
   [self.viatomUtils requestBPConfig];
 
@@ -193,8 +190,6 @@ didFailToConnectPeripheral:(CBPeripheral *)peripheral
 
 #pragma mark - VTMURATUtilsDelegate (generic parser path)
 
-// Unified handler for all command completions.
-// (Includes your 21/20/2-byte heuristic as a fallback.)
 - (void)util:(VTMURATUtils *)util
 commandCompletion:(u_char)cmdType
  deviceType:(VTMDeviceType)deviceType
@@ -205,7 +200,107 @@ commandCompletion:(u_char)cmdType
 
   BOOL handled = NO;
 
-  // 1) SDK-based parsing
+  // Extended 32-byte BP real data (newer firmwares)
+if (cmdType == VTMBPCmdGetRealData && response.length == 32) {
+
+    const uint8_t *p = (const uint8_t *)response.bytes;
+    short rawPressure = (short)(p[1] | (p[2] << 8));
+    double pressure = rawPressure / 100.0;
+    int deflating = p[0];
+    int hasPulse = p[3];
+    int pulseRate = (p[4] | (p[5] << 8));
+
+    NSLog(@"[BP] Real-time Data (Extended) - Pressure:%.2f Deflating:%u Pulse:%u GotPulse:%u",
+          pressure, (unsigned)deflating, (unsigned)pulseRate, (unsigned)hasPulse);
+
+    [self sendEventWithName:@"onRealTimeData" body:@{
+        @"type": @"BP_PROGRESS",
+        @"pressure": @(pressure),
+        @"isDeflating": @(deflating > 0),
+        @"hasPulse": @(hasPulse > 0),
+        @"pulseRate": @(pulseRate),
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+    }];
+
+    // ✅ Auto-stop when device stops sending or pressure drops to baseline
+    static double lastPressure = 0;
+    static NSDate *lastDataTime = nil;
+    NSDate *now = [NSDate date];
+
+    if (!lastDataTime) {
+        lastDataTime = now;
+    }
+
+    // Detect stagnation (no change) or pressure below 10 mmHg for >3 seconds
+    if (fabs(pressure - lastPressure) < 1.0) {
+        if ([now timeIntervalSinceDate:lastDataTime] > 3.0 && self.isBPModeActive) {
+            NSLog(@"[BP] Auto-stop triggered (no pressure change, assuming measurement complete)");
+            self.isWaitingForBPResult = NO;
+            [self.measurementTimeoutTimer invalidate];
+            self.measurementTimeoutTimer = nil;
+            [self exitBPMode];
+            [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_completed"}];
+        }
+    } else {
+        lastPressure = pressure;
+        lastDataTime = now;
+    }
+
+    return;
+}
+
+// Detect end of measurement
+if (cmdType == VTMBPCmdGetRealData && response.length == 32) {
+    const uint8_t *p = (const uint8_t *)response.bytes;
+    short rawPressure = (short)(p[1] | (p[2] << 8));
+    double pressure = rawPressure / 100.0;
+    int deflating = p[0];
+
+    // ✅ If pressure is near zero and deflating stopped → send complete signal
+    if (pressure < 5.0 && deflating == 0 && self.isBPModeActive && self.isWaitingForBPResult) {
+        NSLog(@"[BP] Measurement ended automatically (pressure dropped).");
+        [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_completed"}];
+        self.isWaitingForBPResult = NO;
+        [self.measurementTimeoutTimer invalidate];
+        self.measurementTimeoutTimer = nil;
+        [self exitBPMode];
+        return;
+    }
+}
+// Track previous pressure to detect completion
+static double lastPressure = 0;
+static int stableCount = 0;
+
+if (cmdType == VTMBPCmdGetRealData && response.length == 32) {
+    const uint8_t *p = (const uint8_t *)response.bytes;
+    short rawPressure = (short)(p[1] | (p[2] << 8));
+    double pressure = rawPressure / 100.0;
+    int deflating = p[0];
+
+    if (self.isBPModeActive && self.isWaitingForBPResult) {
+        // If pressure < 10 for several updates → measurement done
+        if (pressure < 10.0) {
+            stableCount++;
+            if (stableCount >= 3) { // three consecutive low readings
+                NSLog(@"[BP] Auto-stop detected: pressure stable near 0.");
+                [self sendEventWithName:@"onBPStatusChanged"
+                                   body:@{@"status": @"measurement_completed"}];
+                [self exitBPMode];
+                self.isWaitingForBPResult = NO;
+                [self.measurementTimeoutTimer invalidate];
+                self.measurementTimeoutTimer = nil;
+                stableCount = 0;
+                lastPressure = 0;
+                return;
+            }
+        } else {
+            stableCount = 0;
+        }
+        lastPressure = pressure;
+    }
+}
+
+  // 1) SDK-based parsing (preferred)
   if (cmdType == VTMBPCmdGetRealData) {
     VTMBPRealTimeData realTimeData = [VTMBLEParser parseBPRealTimeData:response];
 
@@ -222,7 +317,7 @@ commandCompletion:(u_char)cmdType
         @"isDeflating": @(measuringData.is_deflating),
         @"pulseRate": @(measuringData.pulse_rate),
         @"hasPulse": @(measuringData.is_get_pulse),
-        @"timestamp": [NSDate date].description
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
       }];
       handled = YES;
     }
@@ -240,7 +335,7 @@ commandCompletion:(u_char)cmdType
         @"meanPressure": @(endData.mean_pressure),
         @"stateCode": @(endData.state_code),
         @"medicalResult": @(endData.medical_result),
-        @"timestamp": [NSDate date].description
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
       }];
 
       self.isWaitingForBPResult = NO;
@@ -249,7 +344,10 @@ commandCompletion:(u_char)cmdType
       [self exitBPMode];
       handled = YES;
     }
-  } else if (cmdType == VTMBPCmdGetRealStatus) {
+  }
+
+  // 2) Status (battery / run status)
+  if (cmdType == VTMBPCmdGetRealStatus) {
     VTMBPRunStatus runStatus = [VTMBLEParser parseBPRealTimeStatus:response];
 
     RCTLogInfo(@"[BP] Run Status: %d Battery:%d%%",
@@ -259,37 +357,42 @@ commandCompletion:(u_char)cmdType
       @"type": @"BP_STATUS_UPDATE",
       @"status": @(runStatus.status),
       @"batteryLevel": @(runStatus.battery.percent),
+      @"isCharging": @(runStatus.battery.state > 0),
+      @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+    }];
+
+    // Also dispatch a dedicated BP status changed so UI can update battery quickly
+    [self sendEventWithName:@"onBPStatusChanged" body:@{
+      @"status": @"battery_update",
+      @"batteryLevel": @(runStatus.battery.percent),
       @"isCharging": @(runStatus.battery.state > 0)
     }];
+
     handled = YES;
   }
 
-  // 2) Original heuristic (21/20/2) — used only if not handled above.
+  // 3) Fallback heuristic by payload length (if SDK parser didn't handle)
   if (!handled) {
     const uint8_t *p = (const uint8_t *)response.bytes;
     const NSUInteger n = response.length;
 
     // VTMBPMeasuringData = 21 bytes
     if (n == 21) {
-      u_char  is_deflating   = p[0];
-      short   pressure_raw   = vt_s16le(p+1);
-      u_char  is_get_pulse   = p[3];
-      u_short pulse_rate     = vt_u16le(p+4);
-      u_char  is_deflating_2 = p[6];
-
+      u_char is_deflating = p[0];
+      short pressure_raw = vt_s16le(p+1);
+      u_char is_get_pulse = p[3];
+      u_short pulse_rate = vt_u16le(p+4);
+      u_char is_deflating_2 = p[6];
       const double mmHg = vt_normalize_pressure(pressure_raw);
-      NSLog(@"[BP_PROGRESS] raw=%d -> %.2f mmHg defl=%d/%d pulseFlag=%d rate=%u",
-            pressure_raw, mmHg, is_deflating, is_deflating_2, is_get_pulse, pulse_rate);
 
-      [self sendEventWithName:@"onRealTimeData"
-                         body:@{
-                           @"type": @"BP_PROGRESS",
-                           @"pressure": @(mmHg),
-                           @"isDeflating": @((BOOL)(is_deflating || is_deflating_2)),
-                           @"hasPulse": @((BOOL)is_get_pulse),
-                           @"pulseRate": @(pulse_rate),
-                           @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
-                         }];
+      [self sendEventWithName:@"onRealTimeData" body:@{
+        @"type": @"BP_PROGRESS",
+        @"pressure": @(mmHg),
+        @"isDeflating": @((BOOL)(is_deflating || is_deflating_2)),
+        @"hasPulse": @((BOOL)is_get_pulse),
+        @"pulseRate": @(pulse_rate),
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+      }];
 
       if ((is_deflating || is_deflating_2) && is_get_pulse) {
         [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_ending"}];
@@ -299,31 +402,41 @@ commandCompletion:(u_char)cmdType
 
     // VTMBPEndMeasureData = 20 bytes
     if (n == 20) {
-      // u_char is_deflating = p[0]; // unused
-      short   pressure_raw   = vt_s16le(p+1);
-      u_short sys            = vt_u16le(p+3);
-      u_short dia            = vt_u16le(p+5);
-      u_short mean           = vt_u16le(p+7);
-      u_short pulse          = vt_u16le(p+9);
-      u_char  state_code     = p[11];
-      u_char  medical_result = p[12];
+      short pressure_raw = vt_s16le(p+1);
+      u_short sys = vt_u16le(p+3);
+      u_short dia = vt_u16le(p+5);
+      u_short mean = vt_u16le(p+7);
+      u_short pulse = vt_u16le(p+9);
+      u_char state_code = p[11];
+      u_char medical_result = p[12];
 
       const double endRealtimeMmHg = vt_normalize_pressure(pressure_raw);
       NSLog(@"[BP_RESULT] sys=%u dia=%u mean=%u pulse=%u endRealtime=%.2f state=%u med=%u",
             sys, dia, mean, pulse, endRealtimeMmHg, state_code, medical_result);
 
-      [self sendEventWithName:@"onRealTimeData"
-                         body:@{
-                           @"type": @"BP",
-                           @"systolic": @(sys),
-                           @"diastolic": @(dia),
-                           @"mean": @(mean),
-                           @"pulse": @(pulse),
-                           @"stateCode": @(state_code),
-                           @"medicalResult": @(medical_result),
-                           @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
-                         }];
+      [self sendEventWithName:@"onRealTimeData" body:@{
+        @"type": @"BP",
+        @"systolic": @(sys),
+        @"diastolic": @(dia),
+        @"mean": @(mean),
+        @"pulse": @(pulse),
+        @"stateCode": @(state_code),
+        @"medicalResult": @(medical_result),
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+      }];
 
+      [self sendEventWithName:@"onMeasurementResult" body:@{
+        @"type": @"BP_RESULT",
+        @"systolic": @(sys),
+        @"diastolic": @(dia),
+        @"pulse": @(pulse),
+        @"meanPressure": @(mean),
+        @"stateCode": @(state_code),
+        @"medicalResult": @(medical_result),
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+      }];
+
+      // End measurement housekeeping
       self.isWaitingForBPResult = NO;
       [self.measurementTimeoutTimer invalidate];
       self.measurementTimeoutTimer = nil;
@@ -335,86 +448,39 @@ commandCompletion:(u_char)cmdType
     if (n == 2) {
       short pressure_raw = vt_s16le(p);
       const double mmHg = vt_normalize_pressure(pressure_raw);
-      NSLog(@"[BP_PROGRESS:VTMRealTimePressure] raw=%d -> %.2f mmHg", pressure_raw, mmHg);
-
-      [self sendEventWithName:@"onRealTimeData"
-                         body:@{
-                           @"type": @"BP_PROGRESS",
-                           @"pressure": @(mmHg),
-                           @"isDeflating": @NO,
-                           @"hasPulse": @NO,
-                           @"pulseRate": @0,
-                           @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
-                         }];
+      [self sendEventWithName:@"onRealTimeData" body:@{
+        @"type": @"BP_PROGRESS",
+        @"pressure": @(mmHg),
+        @"isDeflating": @NO,
+        @"hasPulse": @NO,
+        @"pulseRate": @0,
+        @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+      }];
       return;
     }
   }
 }
 
-#if 0
-// PRESERVED (disabled) — previous duplicate method to avoid selector redefinition.
-/*
-- (void)util:(VTMURATUtils *)util
-commandCompletion:(u_char)cmdType
- deviceType:(VTMDeviceType)deviceType
-    response:(NSData *)response
-{
-    if (cmdType == VTMBPCmdGetRealStatus) {
-        VTMBPRunStatus runStatus = [VTMBLEParser parseBPRealTimeStatus:response];
+#pragma mark - Device info callback
 
-        RCTLogInfo(@"[BP] Run Status: %d Battery:%d%%",
-                   runStatus.status, runStatus.battery.percent);
-
-        [self sendEventWithName:@"onRealTimeData" body:@{
-            @"type": @"BP_STATUS_UPDATE",
-            @"status": @(runStatus.status),
-            @"batteryLevel": @(runStatus.battery.percent),
-            @"isCharging": @(runStatus.battery.state > 0)
-        }];
-    }
-}
-*/
-#endif
-
-#if 0
-// PRESERVED (disabled) — original free-floating heuristic block that caused compile errors.
-// It is now integrated (unchanged) inside the unified commandCompletion method above.
-/*
-  // Heuristic by payload length (SDK doc says use VTMBLEParser; length works well too)
-  //  - VTMBPMeasuringData = 21 bytes
-  //  - VTMBPEndMeasureData = 20 bytes
-  //  - VTMRealTimePressure  = 2 bytes (short *100)
-  if (n == 21) { ... }
-  if (n == 20) { ... }
-  if (n == 2)  { ... }
-*/
-#endif
-
-#pragma mark - (optional) Device info helper (kept as-is if your SDK emits it)
 - (void)deviceInfo:(VTMDeviceInfo)info {
   NSLog(@"Device Info: type=0x%04x fw=%u", info.device_type, info.fw_version);
   if (self.connectedPeripheral) {
     [self sendEventWithName:@"onDeviceConnected"
-                       body:@{ @"name": self.connectedPeripheral.name ?: @"Unknown",
-                               @"id": self.connectedPeripheral.identifier.UUIDString,
-                               @"deviceType": @(info.device_type),
-                               @"fwVersion": @(info.fw_version) }];
+                       body:@{
+                         @"name": self.connectedPeripheral.name ?: @"Unknown",
+                         @"id": self.connectedPeripheral.identifier.UUIDString,
+                         @"deviceType": @(info.device_type),
+                         @"fwVersion": @(info.fw_version)
+                       }];
   }
 }
 
 #pragma mark - Helpers
 
-- (NSArray *)arrayFromWave:(VTMRealTimeWF)waveform {
-  NSMutableArray *arr = [NSMutableArray array];
-  for (int i = 0; i < waveform.sampling_num; i++) {
-    [arr addObject:@(waveform.wave_data[i])];
-  }
-  return arr;
-}
-
 - (void)exitBPMode {
   if (self.isBPModeActive) {
-    [self.viatomUtils requestChangeBPState:1]; // back to ECG/idle as per SDK doc
+    [self.viatomUtils requestChangeBPState:1];
     self.isBPModeActive = NO;
     [self sendEventWithName:@"onBPModeChanged" body:@{@"active": @NO}];
   }
@@ -436,19 +502,23 @@ commandCompletion:(u_char)cmdType
   self.isBPModeActive = YES;
   self.isWaitingForBPResult = YES;
 
-  // Ask for realtime stream
-  [self.viatomUtils requestBPRealData];
+  // Add a short delay to allow the device to flip into BP mode, then request real data
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [self.viatomUtils requestBPRealData];
+  });
 
   [self sendEventWithName:@"onRealTimeData"
                      body:@{@"type": @"BP_REALDATA_REQUESTED",
                             @"message": @"Request real data."}];
 
   [self.measurementTimeoutTimer invalidate];
-  self.measurementTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:180.0
-                                                                  target:self
-                                                                selector:@selector(measurementTimeout)
-                                                                userInfo:nil
-                                                                 repeats:NO];
+  self.measurementTimeoutTimer =
+    [NSTimer scheduledTimerWithTimeInterval:180.0
+                                     target:self
+                                   selector:@selector(measurementTimeout)
+                                   userInfo:nil
+                                    repeats:NO];
 
   [self sendEventWithName:@"onBPModeChanged" body:@{@"active": @YES}];
   [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_started"}];
@@ -468,15 +538,14 @@ RCT_EXPORT_METHOD(stopScan) { [self.centralManager stopScan]; }
 
 RCT_EXPORT_METHOD(connectToDevice:(NSString *)deviceId) {
   NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:deviceId];
-  CBPeripheral *peripheralToConnect = nil;
-  for (CBPeripheral *peripheral in self.discoveredPeripherals) {
-    if ([peripheral.identifier isEqual:uuid]) { peripheralToConnect = peripheral; break; }
+  CBPeripheral *target = nil;
+  for (CBPeripheral *p in self.discoveredPeripherals) {
+    if ([p.identifier isEqual:uuid]) { target = p; break; }
   }
-  if (peripheralToConnect) {
-    [self.centralManager connectPeripheral:peripheralToConnect options:nil];
+  if (target) {
+    [self.centralManager connectPeripheral:target options:nil];
   } else {
-    [self sendEventWithName:@"onDeviceError"
-                       body:@{@"error": @"Device not found", @"deviceId": deviceId}];
+    [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Device not found", @"deviceId": deviceId}];
   }
 }
 
@@ -495,7 +564,6 @@ RCT_EXPORT_METHOD(startBPMeasurement) {
     return;
   }
   if (!self.isDeployed) {
-    // queue until deploy is finished
     self.pendingStart = YES;
     [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Waiting for device to finish setup…"}];
     return;
@@ -516,6 +584,7 @@ RCT_EXPORT_METHOD(requestBPConfig) {
 
 RCT_EXPORT_METHOD(requestBPRunStatus) {
   if (self.viatomUtils && self.connectedPeripheral) {
+    // Request run status / battery but DO NOT exit BP mode here.
     [self.viatomUtils bp_requestRealStatus];
   }
 }

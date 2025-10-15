@@ -388,6 +388,8 @@ export default function BloodPressure({ navigation }) {
 
   const toastTimeoutRef = useRef(null);
   const measurementTimeoutRef = useRef(null);
+  const [batteryLevel, setBatteryLevel] = useState(null);
+
 
   // dynamic list of BP readings (most recent first)
   const [bloodPressureData, setBloodPressureData] = useState([]);
@@ -422,6 +424,39 @@ export default function BloodPressure({ navigation }) {
       handleRealTimeData(data);
     });
 
+    const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (data) => {
+  console.log('[BP] Final Result received:', data);
+
+  // Stop measuring in UI
+  stopMeasurementUIOnly();
+
+  const now = new Date();
+  const newReading = {
+    id: Date.now(),
+    date: now.toLocaleDateString(),
+    time: now.toLocaleTimeString(),
+    systolic: Number(data.systolic),
+    diastolic: Number(data.diastolic),
+    bpm: Number(data.pulse),
+    mean: Number(data.meanPressure),
+  };
+
+  setBloodPressureData((prev) => [newReading, ...prev].slice(0, 20));
+  setRealTimeData({
+    type: 'BP',
+    systolic: newReading.systolic,
+    diastolic: newReading.diastolic,
+    pulse: newReading.bpm,
+    mean: newReading.mean,
+  });
+
+  showToastMessage(
+    `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+    3000
+  );
+});
+
+
     // --- BP mode state
     const modeSubscription = ViatomDeviceManager.addListener('onBPModeChanged', (payload) => {
       console.log('[BP] Mode changed:', payload);
@@ -438,7 +473,11 @@ export default function BloodPressure({ navigation }) {
         setIsMeasuring(true);
       } else if (payload?.status === 'measurement_ending') {
         showToastMessage('Finishing up…');
+      } else if (payload?.status === 'measurement_completed') {
+        showToastMessage('Measurement complete');
+        stopMeasurementUIOnly();
       }
+
     });
 
     // --- Errors
@@ -472,6 +511,15 @@ export default function BloodPressure({ navigation }) {
   const handleRealTimeData = (data) => {
     if (!data || !data.type) return;
 
+      if (data.type === 'BP_STATUS_UPDATE') {
+    console.log('[UI] Battery update received:', data);
+    if (typeof data.batteryLevel === 'number') {
+      setBatteryLevel(data.batteryLevel);
+    }
+    return;
+  }
+
+
     // Small cue from native when live stream requested
     if (data.type === 'BP_REALDATA_REQUESTED') {
       showToastMessage(data.message || 'Request real data.');
@@ -480,18 +528,27 @@ export default function BloodPressure({ navigation }) {
     }
 
     // Live progress
-    if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
-      // pressure is normalized to mmHg in native
-      setRealTimeData({
-        type: 'BP_PROGRESS',
-        pressure: Number(data.pressure) || 0,
-        isDeflating: !!data.isDeflating,
-        hasPulse: !!data.hasPulse,
-        pulseRate: Number(data.pulseRate) || 0,
-      });
-      setIsMeasuring(true);
-      return;
+  if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+    const isDeflating = !!data.isDeflating;
+    setRealTimeData({
+      type: 'BP_PROGRESS',
+      pressure: Number(data.pressure) || 0,
+      isDeflating,
+      hasPulse: !!data.hasPulse,
+      pulseRate: Number(data.pulseRate) || 0,
+    });
+
+    // 🔹 Add this to show inflating/deflating text
+    if (!isDeflating && (data.pressure ?? 0) > 0) {
+      showToastMessage('Inflating...');
+    } else if (isDeflating) {
+      showToastMessage('Deflating...');
     }
+
+    setIsMeasuring(true);
+    return;
+  }
+
 
     // Final result
     if (data.type === 'BP') {
@@ -686,20 +743,37 @@ export default function BloodPressure({ navigation }) {
     </Modal>
   );
 
-  const renderConnectionStatus = () => (
-    <View style={styles.connectionStatus}>
-      <View
-        style={[
-          styles.statusIndicator,
-          { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
-        ]}
-      />
-      <Text style={styles.statusText}>{connectedDevice ? 'Connected' : 'Disconnected'}</Text>
-      <TouchableOpacity style={styles.connectButtonSmall} onPress={() => setShowDeviceModal(true)}>
-        <Text style={styles.connectButtonTextSmall}>{connectedDevice ? 'Disconnect' : 'Connect'}</Text>
-      </TouchableOpacity>
-    </View>
-  );
+const renderConnectionStatus = () => (
+  <View style={styles.connectionStatus}>
+    <View
+      style={[
+        styles.statusIndicator,
+        { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
+      ]}
+    />
+    <Text style={styles.statusText}>
+      {connectedDevice ? 'Connected' : 'Disconnected'}
+    </Text>
+
+    {/* Battery level display */}
+    {batteryLevel !== null && (
+      <Text style={{ marginLeft: 10, color: '#333', fontWeight: '600' }}>
+        🔋 {batteryLevel}%
+      </Text>
+    )}
+
+    <TouchableOpacity
+      style={styles.connectButtonSmall}
+      onPress={() => setShowDeviceModal(true)}>
+      <Text style={styles.connectButtonTextSmall}>
+        {connectedDevice ? 'Disconnect' : 'Connect'}
+      </Text>
+    </TouchableOpacity>
+  </View>
+);
+
+
+
 
   const renderDeviceControls = () => (
     <View style={styles.controlsContainer}>
@@ -741,12 +815,18 @@ export default function BloodPressure({ navigation }) {
               </Text>
             </View>
 
-            {realTimeData.isDeflating && (
-              <View style={styles.measurementRow}>
-                <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
-                <Text style={[styles.measurementValue, { color: '#f39c12' }]}>Deflating...</Text>
-              </View>
-            )}
+          <View style={styles.measurementRow}>
+            <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
+            <Text
+              style={[
+                styles.measurementValue,
+                { color: realTimeData.isDeflating ? '#f39c12' : '#3498db' },
+              ]}>
+              {realTimeData.isDeflating ? 'Deflating...' : 'Inflating...'}
+            </Text>
+          </View>
+
+
 
             {realTimeData.hasPulse && realTimeData.pulseRate > 0 && (
               <View style={styles.measurementRow}>
