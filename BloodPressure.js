@@ -424,8 +424,10 @@ export default function BloodPressure({ navigation }) {
       handleRealTimeData(data);
     });
 
-    const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (data) => {
-  console.log('[BP] Final Result received:', data);
+const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
+  if (evt?.type !== 'BP_RESULT') return;
+
+  console.log('[BP] Final Result received:', evt);
 
   // Stop measuring in UI
   stopMeasurementUIOnly();
@@ -435,19 +437,22 @@ export default function BloodPressure({ navigation }) {
     id: Date.now(),
     date: now.toLocaleDateString(),
     time: now.toLocaleTimeString(),
-    systolic: Number(data.systolic),
-    diastolic: Number(data.diastolic),
-    bpm: Number(data.pulse),
-    mean: Number(data.meanPressure),
+    systolic: Number(evt.systolic),
+    diastolic: Number(evt.diastolic),
+    bpm: Number(evt.pulse),
+    mean: Number(evt.meanPressure),
   };
 
   setBloodPressureData((prev) => [newReading, ...prev].slice(0, 20));
+
+  // Update the real-time panel with final result
   setRealTimeData({
     type: 'BP',
     systolic: newReading.systolic,
     diastolic: newReading.diastolic,
     pulse: newReading.bpm,
     mean: newReading.mean,
+    phase: 'done',              // optional, if you want to show a "done" state
   });
 
   showToastMessage(
@@ -455,6 +460,7 @@ export default function BloodPressure({ navigation }) {
     3000
   );
 });
+
 
 
     // --- BP mode state
@@ -528,26 +534,33 @@ export default function BloodPressure({ navigation }) {
     }
 
     // Live progress
-  if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
-    const isDeflating = !!data.isDeflating;
-    setRealTimeData({
-      type: 'BP_PROGRESS',
-      pressure: Number(data.pressure) || 0,
-      isDeflating,
-      hasPulse: !!data.hasPulse,
-      pulseRate: Number(data.pulseRate) || 0,
-    });
+// Live progress
+if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+  const defl = !!data.isDeflating;
+  const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
+  const phase = data.phase || (defl ? 'deflating' : 'inflating');
 
-    // 🔹 Add this to show inflating/deflating text
-    if (!isDeflating && (data.pressure ?? 0) > 0) {
-      showToastMessage('Inflating...');
-    } else if (isDeflating) {
-      showToastMessage('Deflating...');
-    }
+  setRealTimeData({
+    type: 'BP_PROGRESS',
+    pressure: Number(data.pressure) || 0,
+    isDeflating: defl,
+    isInflating: infl,
+    phase,
+    hasPulse: !!data.hasPulse,
+    pulseRate: Number(data.pulseRate) || 0,
+  });
 
-    setIsMeasuring(true);
-    return;
+  // Optional UI cue
+  if (!defl && (data.pressure ?? 0) > 0) {
+    showToastMessage('Inflating...');
+  } else if (defl) {
+    showToastMessage('Deflating...');
   }
+
+  setIsMeasuring(true);
+  return;
+}
+
 
 
     // Final result

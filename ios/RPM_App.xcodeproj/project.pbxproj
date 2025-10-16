@@ -8,26 +8,26 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		54C78839E63637CF6A357E0C /* libPods-RPM_App.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 12763D3829C831366AC5D5A9 /* libPods-RPM_App.a */; };
 		733E6666E3ED080209538D76 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		9B6D9A972E6E2294002A0EA5 /* ViatomDeviceManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 9B6D9A942E6E2167002A0EA5 /* ViatomDeviceManager.m */; };
-		F9A20D31403C50603CA14A9A /* libPods-RPM_App.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B60976C1DDB5E5AFE296263 /* libPods-RPM_App.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0B60976C1DDB5E5AFE296263 /* libPods-RPM_App.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-RPM_App.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		12763D3829C831366AC5D5A9 /* libPods-RPM_App.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-RPM_App.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07F961A680F5B00A75B9A /* RPM_App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RPM_App.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = RPM_App/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = RPM_App/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = RPM_App/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		56111081C2C5B542CB2EA4C3 /* Pods-RPM_App.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RPM_App.release.xcconfig"; path = "Target Support Files/Pods-RPM_App/Pods-RPM_App.release.xcconfig"; sourceTree = "<group>"; };
+		5F7CD98DBF212FB4504F78D3 /* Pods-RPM_App.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RPM_App.release.xcconfig"; path = "Target Support Files/Pods-RPM_App/Pods-RPM_App.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = RPM_App/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = RPM_App/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9B6D9A942E6E2167002A0EA5 /* ViatomDeviceManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ViatomDeviceManager.m; sourceTree = "<group>"; };
 		9B6D9A952E6E217C002A0EA5 /* ViatomDeviceManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViatomDeviceManager.h; sourceTree = "<group>"; };
 		9B6D9A962E6E2181002A0EA5 /* RPM_APP-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "RPM_APP-Bridging-Header.h"; sourceTree = "<group>"; };
-		B5D105CB6BED8C1CCF04FB58 /* Pods-RPM_App.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RPM_App.debug.xcconfig"; path = "Target Support Files/Pods-RPM_App/Pods-RPM_App.debug.xcconfig"; sourceTree = "<group>"; };
+		C1EA35205ECF66E3CE8F0A05 /* Pods-RPM_App.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RPM_App.debug.xcconfig"; path = "Target Support Files/Pods-RPM_App/Pods-RPM_App.debug.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -36,7 +36,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F9A20D31403C50603CA14A9A /* libPods-RPM_App.a in Frameworks */,
+				54C78839E63637CF6A357E0C /* libPods-RPM_App.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -59,7 +59,7 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				0B60976C1DDB5E5AFE296263 /* libPods-RPM_App.a */,
+				12763D3829C831366AC5D5A9 /* libPods-RPM_App.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -107,8 +107,8 @@
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				B5D105CB6BED8C1CCF04FB58 /* Pods-RPM_App.debug.xcconfig */,
-				56111081C2C5B542CB2EA4C3 /* Pods-RPM_App.release.xcconfig */,
+				C1EA35205ECF66E3CE8F0A05 /* Pods-RPM_App.debug.xcconfig */,
+				5F7CD98DBF212FB4504F78D3 /* Pods-RPM_App.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -120,13 +120,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "RPM_App" */;
 			buildPhases = (
-				D2F71C16928C14A4AAC9D5FF /* [CP] Check Pods Manifest.lock */,
+				DB7510DE6EC4D695CF363E4A /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
-				1CB4243B99395E1E6B0E6697 /* [CP] Embed Pods Frameworks */,
-				FCEC744D27950A7A18CBE739 /* [CP] Copy Pods Resources */,
+				F52482DED210244E4C51C63F /* [CP] Embed Pods Frameworks */,
+				891FE43F1E9852955CA6A93E /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -198,24 +198,24 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\n\nWITH_ENVIRONMENT=\"$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"$REACT_NATIVE_PATH/scripts/react-native-xcode.sh\"\n\n/bin/sh -c \"$WITH_ENVIRONMENT $REACT_NATIVE_XCODE\"\n";
 		};
-		1CB4243B99395E1E6B0E6697 /* [CP] Embed Pods Frameworks */ = {
+		891FE43F1E9852955CA6A93E /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			name = "[CP] Embed Pods Frameworks";
+			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		D2F71C16928C14A4AAC9D5FF /* [CP] Check Pods Manifest.lock */ = {
+		DB7510DE6EC4D695CF363E4A /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -237,21 +237,21 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		FCEC744D27950A7A18CBE739 /* [CP] Copy Pods Resources */ = {
+		F52482DED210244E4C51C63F /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			name = "[CP] Copy Pods Resources";
+			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-RPM_App/Pods-RPM_App-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -271,7 +271,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = B5D105CB6BED8C1CCF04FB58 /* Pods-RPM_App.debug.xcconfig */;
+			baseConfigurationReference = C1EA35205ECF66E3CE8F0A05 /* Pods-RPM_App.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -301,7 +301,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 56111081C2C5B542CB2EA4C3 /* Pods-RPM_App.release.xcconfig */;
+			baseConfigurationReference = 5F7CD98DBF212FB4504F78D3 /* Pods-RPM_App.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
