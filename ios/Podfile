@@ -24,7 +24,7 @@ target 'RPM_App' do
   )
 
   pod 'VTMProductLib', :git => 'https://github.com/Viatom-iOS/VTProductLib_Pods.git'
-  
+  pod 'VTO2Lib', :git => 'https://github.com/Viatom-iOS/VTO2Lib_Pods.git'
   post_install do |installer|
     # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
     react_native_post_install(

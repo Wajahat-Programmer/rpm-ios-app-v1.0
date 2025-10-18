@@ -2516,6 +2516,7 @@ PODS:
     - Yoga
   - SocketRocket (0.7.1)
   - VTMProductLib (1.5.2)
+  - VTO2Lib (1.10.2)
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2598,6 +2599,7 @@ DEPENDENCIES:
   - RNSVG (from `../node_modules/react-native-svg`)
   - SocketRocket (~> 0.7.1)
   - VTMProductLib (from `https://github.com/Viatom-iOS/VTProductLib_Pods.git`)
+  - VTO2Lib (from `https://github.com/Viatom-iOS/VTO2Lib_Pods.git`)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:
@@ -2760,6 +2762,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-svg"
   VTMProductLib:
     :git: https://github.com/Viatom-iOS/VTProductLib_Pods.git
+  VTO2Lib:
+    :git: https://github.com/Viatom-iOS/VTO2Lib_Pods.git
   Yoga:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
@@ -2767,6 +2771,9 @@ CHECKOUT OPTIONS:
   VTMProductLib:
     :commit: 4903aafe28961c23325d3e950604c744756ca53d
     :git: https://github.com/Viatom-iOS/VTProductLib_Pods.git
+  VTO2Lib:
+    :commit: 6730e808a2f313f497a7890eebfa027c0000c8d0
+    :git: https://github.com/Viatom-iOS/VTO2Lib_Pods.git
 
 SPEC CHECKSUMS:
   boost: 7e761d76ca2ce687f7cc98e698152abd03a18f90
@@ -2847,8 +2854,9 @@ SPEC CHECKSUMS:
   RNSVG: 6f39605a4c4d200b11435c35bd077553c6b5963a
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   VTMProductLib: 94eacd7389ab1ec8bed661eb465fe1ffbd731409
+  VTO2Lib: 4149d9f1c8f50b6a5626e18e6a0a737cb49aef26
   Yoga: 11c9686a21e2cd82a094a723649d9f4507200fb0
 
-PODFILE CHECKSUM: 52a682148de0c670d1b6f8a4eea23112da0b8dc2
+PODFILE CHECKSUM: d8da584783d2631cf349c5c0e963d6b912e07abe
 
 COCOAPODS: 1.16.2

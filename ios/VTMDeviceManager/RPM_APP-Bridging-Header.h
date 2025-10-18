@@ -6,3 +6,4 @@
 //
 
 #import "ViatomDeviceManager.h"
+#import "ViatomO2Manager.h"

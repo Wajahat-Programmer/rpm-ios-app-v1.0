@@ -16,6 +16,7 @@ import Settings  from './Settings';
 import Profile from './Profile';
 import PrivacySecurity from './PrivacySecurityScreen';
 import AboutApp from './AboutAppScreen';
+import Oxygen from './Oxygen';
 
 
 
@@ -32,6 +33,7 @@ export default function App() {
         <Stack.Screen name="Login" component={Login} />
         <Stack.Screen name="Home" component={Home} />
         <Stack.Screen name="BloodPressure" component={BloodPressure} />
+        <Stack.Screen name="Oxygen" component={Oxygen} />
         <Stack.Screen name='ECG' component={ECG}/>
         <Stack.Screen name='Connection' component={Connection}/>
         <Stack.Screen name='Settings' component={Settings}/>
