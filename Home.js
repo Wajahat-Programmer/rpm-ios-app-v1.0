@@ -14,11 +14,16 @@ import {
 import globalStyles from './globalStyles';
 import { LineChart } from "react-native-chart-kit";
 import CookieManager from '@react-native-cookies/cookies';
+import axios from 'axios';
 
 const { width, height } = Dimensions.get('window');
 
 const cardBackground = '#efefef';
 const iconBackground = 'transparent';
+
+// Configure axios to include credentials (cookies)
+axios.defaults.withCredentials = true;
+const API_BASE_URL = 'https://rmtrpm.duckdns.org/rpm-be/api/dev-data';
 
 // Health grid cards
 const healthCards = [
@@ -30,9 +35,9 @@ const healthCards = [
   { id: 7, image: require('./assets/W.png'), text: 'Weight', disabled: true }
 ];
 
-// Summary cards data
+// Summary cards data - BP will be updated dynamically
 const summaryCards = [
-  { id: 'bp', title: 'Blood Pressure', value: '125/80', unit: 'mmHg', subText: 'Pulse Rate: 62 bpm', goal: '120/80' },
+  { id: 'bp', title: 'Blood Pressure', value: '--/--', unit: 'mmHg', subText: 'Pulse Rate: -- bpm', goal: '120/80' },
   { id: 'weight', title: 'Weight', value: '190.2', unit: 'lbs', subText: 'BMI: 27.3', goal: '188.0' },
   { id: 'glucose', title: 'Blood Glucose', value: '98', unit: 'mg/dL', subText: 'Fasting', goal: '100' },
   { id: 'temperature', title: 'Temperature', value: '98.6', unit: '°F', subText: 'Normal', goal: '98.6' },
@@ -53,8 +58,41 @@ export default function Home({ navigation }) {
   const [selectedCards, setSelectedCards] = useState(['bp']);
   const [showModal, setShowModal] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [bpData, setBpData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   const menuRef = useRef(null);
   const scrollViewRef = useRef(null);
+
+  // Function to fetch latest BP data
+  const fetchLatestBPData = async () => {
+    try {
+      console.log('📥 Fetching latest BP data...');
+      const response = await axios.get(
+        `${API_BASE_URL}/devices/data/latest?deviceType=bp`,
+        {
+          withCredentials: true,
+        }
+      );
+      
+      if (response.data.success && response.data.data) {
+        console.log('✅ Latest BP data loaded:', response.data.data);
+        setBpData(response.data.data);
+      } else {
+        console.log('ℹ️ No BP data found');
+        setBpData(null);
+      }
+    } catch (error) {
+      console.error('❌ Error fetching latest BP data:', error);
+      setBpData(null);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Fetch latest BP data when component mounts
+    fetchLatestBPData();
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -93,6 +131,50 @@ export default function Home({ navigation }) {
         setSelectedCards([...selectedCards, id]);
       }
     }
+  };
+
+  // Get BP card data with real values
+  const getBPCardData = () => {
+    if (isLoading) {
+      return {
+        id: 'bp',
+        title: 'Blood Pressure',
+        value: 'Loading...',
+        unit: '',
+        subText: 'Fetching data...',
+        goal: '120/80'
+      };
+    }
+
+    if (!bpData) {
+      return {
+        id: 'bp',
+        title: 'Blood Pressure',
+        value: '--/--',
+        unit: 'mmHg',
+        subText: 'No data available',
+        goal: '120/80'
+      };
+    }
+
+    const bpValue = bpData.data;
+    return {
+      id: 'bp',
+      title: 'Blood Pressure',
+      value: `${bpValue.systolic || '--'}/${bpValue.diastolic || '--'}`,
+      unit: 'mmHg',
+      subText: `Pulse Rate: ${bpValue.pulse || '--'} bpm`,
+      goal: '120/80',
+      timestamp: bpData.createdAt
+    };
+  };
+
+  // Get the actual card data for display
+  const getCardData = (id) => {
+    if (id === 'bp') {
+      return getBPCardData();
+    }
+    return summaryCards.find(c => c.id === id);
   };
 
 return (
@@ -165,7 +247,7 @@ return (
           contentContainerStyle={styles.summaryCardsContent}
         >
           {selectedCards.map((id) => {
-            const card = summaryCards.find(c => c.id === id);
+            const card = getCardData(id);
             return (
               <View key={card.id} style={styles.summaryCard}>
                 <Text style={styles.cardTitle}>{card.title}</Text>
@@ -220,6 +302,13 @@ return (
                   <Text style={styles.goalText}>GOAL</Text>
                   <Text style={styles.goalValue}>{card.goal}</Text>
                 </View>
+
+                {/* Last Updated Time for BP */}
+                {id === 'bp' && card.timestamp && (
+                  <Text style={styles.lastUpdated}>
+                    Last: {new Date(card.timestamp).toLocaleDateString()} {new Date(card.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  </Text>
+                )}
               </View>
             );
           })}
@@ -630,5 +719,12 @@ disabledIconImage: {
 },
 disabledCardText: {
   color: '#888',
+},
+lastUpdated: {
+  fontSize: 10,
+  color: '#666',
+  textAlign: 'center',
+  marginTop: 5,
+  fontStyle: 'italic',
 }
 });

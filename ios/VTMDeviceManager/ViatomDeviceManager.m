@@ -5,6 +5,9 @@
 #import <React/RCTEventEmitter.h>
 #import <React/RCTLog.h>
 
+static NSString * const kViatomCentralRestoreId = @"com.rpmapp.viatom.central.restore";
+static const NSTimeInterval kScanRestartDelay = 0.35;
+
 @interface ViatomURATUtilsSingleton : VTMURATUtils <CBPeripheralDelegate>
 + (instancetype)sharedInstance;
 @end
@@ -18,14 +21,18 @@
 }
 @end
 
-@interface ViatomDeviceManager()
-<CBCentralManagerDelegate, VTMURATUtilsDelegate, VTMURATDeviceDelegate>
+@interface ViatomDeviceManager () <CBCentralManagerDelegate, VTMURATUtilsDelegate, VTMURATDeviceDelegate>
 
 // BLE
 @property (nonatomic, strong) CBCentralManager *centralManager;
 @property (nonatomic, strong) ViatomURATUtilsSingleton *viatomUtils;
-@property (nonatomic, strong) NSMutableArray<CBPeripheral *> *discoveredPeripherals;
+@property (nonatomic, strong) NSMutableDictionary<NSUUID*, CBPeripheral*> *peripheralsById; // UUID -> peripheral
+@property (nonatomic, strong) NSMutableSet<NSUUID*> *seenPeripheralIds; // for duplicate filtering
 @property (nonatomic, strong) CBPeripheral *connectedPeripheral;
+@property (nonatomic, strong) NSUUID *lastConnectedId;
+
+// Back-compat for JS that expects this list
+@property (nonatomic, strong) NSMutableArray<CBPeripheral *> *discoveredPeripherals;
 
 // BP session state
 @property (nonatomic, assign) BOOL isBPModeActive;
@@ -41,6 +48,9 @@
 // Deploy-first flow
 @property (nonatomic, assign) BOOL isDeployed;
 @property (nonatomic, assign) BOOL pendingStart;
+
+// scan options toggle to be a bit more aggressive right after disconnect
+@property (nonatomic, assign) BOOL inRecoveryRescan;
 
 @end
 
@@ -62,18 +72,29 @@ RCT_EXPORT_MODULE();
   ];
 }
 
++ (BOOL)requiresMainQueueSetup { return YES; }
+
 - (instancetype)init {
   if ((self = [super init])) {
-    _centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:dispatch_get_main_queue()];
-    _discoveredPeripherals = [NSMutableArray array];
+    NSDictionary *opts = @{
+      CBCentralManagerOptionShowPowerAlertKey: @YES,
+      CBCentralManagerOptionRestoreIdentifierKey: kViatomCentralRestoreId
+    };
+    _centralManager = [[CBCentralManager alloc] initWithDelegate:self
+                                                           queue:dispatch_get_main_queue()
+                                                         options:opts];
+    _peripheralsById = [NSMutableDictionary dictionary];
+    _seenPeripheralIds = [NSMutableSet set];
+    _discoveredPeripherals = [NSMutableArray array]; // back-compat with JS
+
     _viatomUtils = [ViatomURATUtilsSingleton sharedInstance];
     _viatomUtils.delegate = self;
     _viatomUtils.deviceDelegate = self;
+
+    _inRecoveryRescan = NO;
   }
   return self;
 }
-
-+ (BOOL)requiresMainQueueSetup { return YES; }
 
 - (void)dealloc {
   [self.measurementTimeoutTimer invalidate];
@@ -100,7 +121,6 @@ static BOOL vt_plausible_result_values(uint16_t sys, uint16_t dia, uint16_t mean
   return YES;
 }
 
-// Try to decode a 32-byte composite real-time frame (FW-dependent offsets).
 static BOOL vt_decode_v2_rt32(const uint8_t *p, NSUInteger n,
                               double *outPressure, BOOL *outDefl,
                               BOOL *outHasPulse, int *outPulseRate) {
@@ -128,15 +148,11 @@ static BOOL vt_decode_v2_rt32(const uint8_t *p, NSUInteger n,
   return NO;
 }
 
-// Try to extract a BP result from any blob (34/36/38/40/44...)
-// 1) Use SDK parser: parseBPResult:
-// 2) Sliding-window heuristic for (sys, dia, mean, pulse) 4*uint16_t groups.
 static BOOL vt_try_extract_result(NSData *blob,
                                   uint16_t *oSys, uint16_t *oDia,
                                   uint16_t *oMean, uint16_t *oPulse) {
   if (!blob.length) return NO;
 
-  // 1) SDK parser (BP2/BP2A-style VTMBPBPResult)
   if ([VTMBLEParser respondsToSelector:@selector(parseBPResult:)]) {
     @try {
       VTMBPBPResult r = [VTMBLEParser parseBPResult:blob];
@@ -148,29 +164,49 @@ static BOOL vt_try_extract_result(NSData *blob,
     } @catch (__unused NSException *e) {}
   }
 
-  // 2) Try windows inside the buffer for a plausible 4*uint16_t pattern
   const uint8_t *p = (const uint8_t *)blob.bytes;
   const NSUInteger n = blob.length;
   for (NSUInteger i = 0; i + 8 <= n; i++) {
     uint16_t sys = vt_u16le(p + i);
-    uint16_t dia = (i + 2 <= n) ? vt_u16le(p + i + 2) : 0;
-    uint16_t mean = (i + 4 <= n) ? vt_u16le(p + i + 4) : 0;
-    uint16_t pulse = (i + 6 <= n) ? vt_u16le(p + i + 6) : 0;
+    uint16_t dia = vt_u16le(p + i + 2);
+    uint16_t mean = vt_u16le(p + i + 4);
+    uint16_t pulse = vt_u16le(p + i + 6);
     if (vt_plausible_result_values(sys, dia, mean, pulse)) {
       *oSys = sys; *oDia = dia; *oMean = mean; *oPulse = pulse;
       return YES;
     }
   }
-
   return NO;
+}
+
+#pragma mark - Central creation & restoration
+
+- (void)centralManager:(CBCentralManager *)central willRestoreState:(NSDictionary<NSString *,id> *)dict {
+  NSArray *restored = dict[CBCentralManagerRestoredStatePeripheralsKey];
+  for (CBPeripheral *p in restored) {
+    self.peripheralsById[p.identifier] = p;
+    [self.seenPeripheralIds addObject:p.identifier];
+    if (p.state == CBPeripheralStateConnected || p.state == CBPeripheralStateConnecting) {
+      self.connectedPeripheral = p;
+      self.lastConnectedId = p.identifier;
+
+      p.delegate = self.viatomUtils;
+      self.viatomUtils.peripheral = p;
+      self.viatomUtils.delegate = self;
+      self.viatomUtils.deviceDelegate = self;
+
+      [self sendEventWithName:@"onDeviceConnected"
+                         body:@{@"name": p.name ?: @"Unknown",
+                                @"id": p.identifier.UUIDString}];
+    }
+  }
 }
 
 #pragma mark - CBCentralManagerDelegate
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
   if (central.state == CBManagerStatePoweredOn) {
-    [self.centralManager scanForPeripheralsWithServices:nil
-                                                options:@{CBCentralManagerScanOptionAllowDuplicatesKey:@NO}];
+    [self beginScanNormal];
   } else {
     [self sendEventWithName:@"onDeviceError"
                        body:@{@"error": @"Bluetooth not available",
@@ -178,27 +214,76 @@ static BOOL vt_try_extract_result(NSData *blob,
   }
 }
 
+- (void)beginScanNormal {
+  [self.centralManager stopScan];
+  [self.discoveredPeripherals removeAllObjects];
+  [self.peripheralsById removeAllObjects];
+  [self.seenPeripheralIds removeAllObjects];
+
+  NSDictionary *opts = @{ CBCentralManagerScanOptionAllowDuplicatesKey: @NO };
+  [self.centralManager scanForPeripheralsWithServices:nil options:opts];
+
+  if (self.lastConnectedId) {
+    NSArray<CBPeripheral*> *retrieved = [self.centralManager retrievePeripheralsWithIdentifiers:@[self.lastConnectedId]];
+    for (CBPeripheral *p in retrieved) {
+      self.peripheralsById[p.identifier] = p;
+      if (![self.seenPeripheralIds containsObject:p.identifier]) {
+        [self.seenPeripheralIds addObject:p.identifier];
+        [self.discoveredPeripherals addObject:p];
+        [self sendEventWithName:@"onDeviceDiscovered"
+                           body:@{@"name": p.name ?: @"Unknown",
+                                  @"id": p.identifier.UUIDString,
+                                  @"rssi": @0}];
+      }
+    }
+  }
+}
+
+- (void)beginScanRecovery {
+  self.inRecoveryRescan = YES;
+  [self.centralManager stopScan];
+  [self.discoveredPeripherals removeAllObjects];
+  [self.peripheralsById removeAllObjects];
+  [self.seenPeripheralIds removeAllObjects];
+
+  NSDictionary *opts = @{ CBCentralManagerScanOptionAllowDuplicatesKey: @YES };
+  [self.centralManager scanForPeripheralsWithServices:nil options:opts];
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    self.inRecoveryRescan = NO;
+    [self beginScanNormal];
+  });
+}
+
 - (void)centralManager:(CBCentralManager *)central
    didDiscoverPeripheral:(CBPeripheral *)peripheral
        advertisementData:(NSDictionary<NSString *,id> *)advertisementData
-                    RSSI:(NSNumber *)RSSI {
+                    RSSI:(NSNumber *)RSSI
+{
   NSString *deviceName = peripheral.name ?: advertisementData[CBAdvertisementDataLocalNameKey] ?: @"Unknown";
   NSArray *supportedPrefixes = @[@"Viatom", @"ER1", @"ER2", @"BP2A", @"BP2", @"BP2W", @"Checkme"];
-  BOOL ok = NO; for (NSString *pre in supportedPrefixes) { if ([deviceName hasPrefix:pre]) { ok = YES; break; } }
-  if (ok && RSSI.integerValue > -80) {
-    if (![self.discoveredPeripherals containsObject:peripheral]) {
-      [self.discoveredPeripherals addObject:peripheral];
-      [self sendEventWithName:@"onDeviceDiscovered"
-                         body:@{@"name": deviceName,
-                                @"id": peripheral.identifier.UUIDString,
-                                @"rssi": RSSI ?: @0}];
-    }
+  BOOL prefixOK = NO; for (NSString *pre in supportedPrefixes) { if ([deviceName hasPrefix:pre]) { prefixOK = YES; break; } }
+  if (!prefixOK) return;
+
+  if (![self.seenPeripheralIds containsObject:peripheral.identifier]) {
+    [self.seenPeripheralIds addObject:peripheral.identifier];
+    self.peripheralsById[peripheral.identifier] = peripheral;
+    [self.discoveredPeripherals addObject:peripheral];
+
+    [self sendEventWithName:@"onDeviceDiscovered"
+                       body:@{@"name": deviceName,
+                              @"id": peripheral.identifier.UUIDString,
+                              @"rssi": RSSI ?: @0}];
+  } else {
+    self.peripheralsById[peripheral.identifier] = peripheral;
   }
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   [self.centralManager stopScan];
   self.connectedPeripheral = peripheral;
+  self.lastConnectedId = peripheral.identifier;
 
   peripheral.delegate = self.viatomUtils;
   self.viatomUtils.peripheral = peripheral;
@@ -218,6 +303,11 @@ static BOOL vt_try_extract_result(NSData *blob,
                      body:@{@"error": @"Failed to connect",
                             @"deviceId": peripheral.identifier.UUIDString,
                             @"message": error.localizedDescription ?: @"Unknown error"}];
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kScanRestartDelay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [self beginScanNormal];
+  });
 }
 
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
@@ -225,9 +315,8 @@ static BOOL vt_try_extract_result(NSData *blob,
                      body:@{@"name": peripheral.name ?: @"Unknown",
                             @"id": peripheral.identifier.UUIDString,
                             @"error": error ? error.localizedDescription : @"Normal disconnection"}];
-  self.connectedPeripheral = nil;
-  self.isBPModeActive = NO;
-  self.isWaitingForBPResult = NO;
+
+  [self exitBPMode];
   [self.measurementTimeoutTimer invalidate];
   [self.statusPollTimer invalidate];
   [self.realDataPullTimer invalidate];
@@ -236,8 +325,21 @@ static BOOL vt_try_extract_result(NSData *blob,
   self.statusPollTimer = nil;
   self.realDataPullTimer = nil;
   self.lastResultWaitTimer = nil;
+
   self.isDeployed = NO;
   self.pendingStart = NO;
+
+  self.viatomUtils.delegate = self;
+  self.viatomUtils.deviceDelegate = self;
+  self.viatomUtils.peripheral = nil;
+  peripheral.delegate = nil;
+
+  self.connectedPeripheral = nil;
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kScanRestartDelay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [self beginScanRecovery];
+  });
 }
 
 #pragma mark - VTMURATDeviceDelegate (deploy)
@@ -308,12 +410,10 @@ commandCompletion:(u_char)cmdType
   RCTLogInfo(@"[Viatom] commandCompletion cmd:0x%02X devType:%d respLen:%lu",
              cmdType, deviceType, (unsigned long)response.length);
 
-  // ---- BP realtime / result stream ----
   if (cmdType == VTMBPCmdGetRealData) {
     const uint8_t *p = (const uint8_t *)response.bytes;
     const NSUInteger n = response.length;
 
-    // (A) classic 2-byte pressure only
     if (n == 2) {
       const double mmHg = vt_normalize_pressure(vt_s16le(p));
       [self sendEventWithName:@"onRealTimeData" body:@{
@@ -325,7 +425,6 @@ commandCompletion:(u_char)cmdType
       return;
     }
 
-    // (B) 21-byte measuring snapshot (older FW)
     if (n == 21) {
       u_char is_deflating = p[0];
       short pressure_raw = vt_s16le(p+1);
@@ -345,7 +444,6 @@ commandCompletion:(u_char)cmdType
         @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
       }];
 
-      // low-pressure fallback end
       if (defl && mmHg < 10.0 && self.isWaitingForBPResult) {
         self.lowPressureStreak++;
         if (self.lowPressureStreak >= 3) {
@@ -359,9 +457,7 @@ commandCompletion:(u_char)cmdType
       return;
     }
 
-    // (C) 20-byte classic end-of-measurement result (older FW)
     if (n == 20) {
-      // Layout: [0:flag][1..2:pressure_raw][3..10: sys,dia,mean,pulse][11:state][12:medical]...
       uint16_t sys = vt_u16le(p + 3);
       uint16_t dia = vt_u16le(p + 5);
       uint16_t mean = vt_u16le(p + 7);
@@ -381,14 +477,11 @@ commandCompletion:(u_char)cmdType
         [self exitBPMode];
         return;
       }
-      // fall through to generic parsing
     }
 
-    // (D) 32-byte composite measuring frame (newer FW)
     if (n == 32) {
       double mmHg = 0.0; BOOL defl = NO; BOOL hasPulse = NO; int pr = 0;
       if (vt_decode_v2_rt32(p, n, &mmHg, &defl, &hasPulse, &pr)) {
-        RCTLogInfo(@"[BP] Measuring(32) - P=%.2f, PR=%d, defl=%d, gotPulse=%d", mmHg, pr, defl, hasPulse);
         [self sendEventWithName:@"onRealTimeData" body:@{
           @"type": @"BP_PROGRESS",
           @"pressure": @(mmHg),
@@ -396,7 +489,6 @@ commandCompletion:(u_char)cmdType
           @"hasPulse": @(hasPulse), @"pulseRate": @(pr),
           @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
         }];
-        // low-pressure fallback
         if (defl && mmHg < 10.0 && self.isWaitingForBPResult) {
           self.lowPressureStreak++;
           if (self.lowPressureStreak >= 3) {
@@ -411,12 +503,9 @@ commandCompletion:(u_char)cmdType
       }
     }
 
-    // (E) 34/36/38/40/44-byte (BP2A FW packs BPResult in these)
     if (n == 34 || n == 36 || n == 38 || n == 40 || n == 44) {
       uint16_t sys=0,dia=0,mean=0,pulse=0;
       if (vt_try_extract_result(response, &sys, &dia, &mean, &pulse)) {
-        RCTLogInfo(@"[BP] Complete(%lu) - SYS:%u DIA:%u MEAN:%u PR:%u",
-                   (unsigned long)n, sys, dia, mean, pulse);
         [self sendEventWithName:@"onMeasurementResult" body:@{
           @"type": @"BP_RESULT",
           @"systolic": @(sys), @"diastolic": @(dia),
@@ -429,15 +518,12 @@ commandCompletion:(u_char)cmdType
         [self exitBPMode];
         return;
       }
-      // If not a result, ignore and continue pulling.
     }
 
-    // (F) Fallback: try SDK run-status probe for "end" inside arbitrary buffers
     @try {
       VTMBPRealTimeData rt = [VTMBLEParser parseBPRealTimeData:response];
       if (rt.run_status.status == VTMBPStatusBPMeasureEnd) {
         [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_completed"}];
-        // Give the device a short grace window to emit result frames
         [self.lastResultWaitTimer invalidate];
         self.lastResultWaitTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
                                                                     target:self
@@ -450,11 +536,8 @@ commandCompletion:(u_char)cmdType
     return;
   }
 
-  // ---- 1Hz Run status / battery ----
   if (cmdType == VTMBPCmdGetRealStatus) {
     VTMBPRunStatus s = [VTMBLEParser parseBPRealTimeStatus:response];
-    RCTLogInfo(@"[BP] Run Status: %d Battery:%d%%", s.status, s.battery.percent);
-
     [self sendEventWithName:@"onRealTimeData" body:@{
       @"type": @"BP_STATUS_UPDATE",
       @"status": @(s.status),
@@ -470,7 +553,6 @@ commandCompletion:(u_char)cmdType
 
     if (self.isBPModeActive && s.status == VTMBPStatusBPMeasureEnd) {
       [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_completed"}];
-      // Keep pulling a bit longer to catch 34/36/38/40/44 result frames
       [self.lastResultWaitTimer invalidate];
       self.lastResultWaitTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
                                                                   target:self
@@ -495,7 +577,6 @@ commandCompletion:(u_char)cmdType
 #pragma mark - Device info callback
 
 - (void)deviceInfo:(VTMDeviceInfo)info {
-  NSLog(@"Device Info: type=0x%04x fw=%u", info.device_type, info.fw_version);
   if (self.connectedPeripheral) {
     [self sendEventWithName:@"onDeviceConnected"
                        body:@{
@@ -564,21 +645,26 @@ commandCompletion:(u_char)cmdType
 
 RCT_EXPORT_METHOD(startScan) {
   if (self.centralManager.state == CBManagerStatePoweredOn) {
-    [self.discoveredPeripherals removeAllObjects];
-    [self.centralManager scanForPeripheralsWithServices:nil
-                                                options:@{CBCentralManagerScanOptionAllowDuplicatesKey:@NO}];
+    [self beginScanNormal];
   }
 }
 
-RCT_EXPORT_METHOD(stopScan) { [self.centralManager stopScan]; }
+RCT_EXPORT_METHOD(stopScan) {
+  [self.centralManager stopScan];
+}
 
 RCT_EXPORT_METHOD(connectToDevice:(NSString *)deviceId) {
   NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:deviceId];
-  CBPeripheral *target = nil;
-  for (CBPeripheral *p in self.discoveredPeripherals) {
-    if ([p.identifier isEqual:uuid]) { target = p; break; }
+  CBPeripheral *target = self.peripheralsById[uuid];
+  if (!target) {
+    NSArray<CBPeripheral*> *retrieved = [self.centralManager retrievePeripheralsWithIdentifiers:@[uuid]];
+    target = retrieved.firstObject;
+    if (target) {
+      self.peripheralsById[uuid] = target;
+    }
   }
   if (target) {
+    self.lastConnectedId = uuid;
     [self.centralManager connectPeripheral:target options:nil];
   } else {
     [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Device not found", @"deviceId": deviceId}];
@@ -596,7 +682,16 @@ RCT_EXPORT_METHOD(disconnectDevice) {
     self.statusPollTimer = nil;
     self.realDataPullTimer = nil;
     self.lastResultWaitTimer = nil;
+    self.viatomUtils.peripheral = nil;
+    self.connectedPeripheral.delegate = nil;
+
     [self.centralManager cancelPeripheralConnection:self.connectedPeripheral];
+    self.connectedPeripheral = nil;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kScanRestartDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      [self beginScanNormal];
+    });
   }
 }
 

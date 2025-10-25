@@ -1,5 +1,5 @@
 // BloodPressure.js
-import React, {useState, useMemo, useEffect, useRef} from 'react';
+import React, {useState, useMemo, useEffect, useRef, useCallback} from 'react';
 import {
   View,
   Text,
@@ -11,10 +11,10 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  StatusBar,
-  Platform,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import Svg, {
   Polyline,
   Line as SvgLine,
@@ -25,10 +25,9 @@ import Svg, {
 } from 'react-native-svg';
 import globalStyles from './globalStyles';
 import ViatomDeviceManager from './ViatomDeviceManager';
+import axios from 'axios';
 
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
-
-const X_LABELS = ['9/6', '9/7', '9/8', '9/9', '9/10', '9/11', 'Today'];
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -39,7 +38,54 @@ const getMarkerLeftPercent = systolic => {
   return ((v - min) / (max - min)) * 100;
 };
 
-function BPChart({width, data}) {
+// API Configuration
+const API_BASE_URL = 'https://rmtrpm.duckdns.org/rpm-be/api/dev-data';
+const DEV_TYPE = 'bp'; // Blood Pressure device type
+
+// Configure axios to include credentials (cookies)
+axios.defaults.withCredentials = true;
+
+// Function to store device data
+const storeDeviceData = async (deviceData) => {
+  try {
+    const response = await axios.post(
+      `${API_BASE_URL}/devices/data`,
+      deviceData,
+      {
+        withCredentials: true,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    console.log('✅ Device data stored successfully');
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error storing device data:', error);
+    throw error;
+  }
+};
+
+// Function to fetch historical data
+const fetchHistoricalData = async (days = 7) => {
+  try {
+    console.log(`📥 Fetching historical BP data for last ${days} days`);
+    const response = await axios.get(
+      `${API_BASE_URL}/devices/getUserReadingData?deviceType=bp&days=${days}`,
+      { withCredentials: true }
+    );
+    if (response.data.success) {
+      console.log(`✅ Loaded ${response.data.data.records.length} historical records`);
+      return response.data.data.records;
+    }
+    return [];
+  } catch (error) {
+    console.error('❌ Error fetching historical data:', error);
+    throw error;
+  }
+};
+
+function BPChart({width, data, xLabels}) {
   const padding = {left: 10, right: 48, top: 18, bottom: 26};
   const w = width - 2;
   const h = SCREEN_HEIGHT * 0.22;
@@ -50,7 +96,6 @@ function BPChart({width, data}) {
   const Y_MAX = 160;
   const bracketLabels = [160, 135, 110, 85, 60];
 
-  // If not enough points, return a small placeholder
   if (!data || data.length < 2) {
     return (
       <Svg width={w} height={h}>
@@ -70,17 +115,11 @@ function BPChart({width, data}) {
   const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
   const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
 
-  const sysPoints = data
-    .map((d, i) => `${xFor(i)},${yFor(d.systolic)}`)
-    .join(' ');
-  const diaPoints = data
-    .map((d, i) => `${xFor(i)},${yFor(d.diastolic)}`)
-    .join(' ');
+  const sysPoints = data.map((d, i) => `${xFor(i)},${yFor(d.systolic)}`).join(' ');
+  const diaPoints = data.map((d, i) => `${xFor(i)},${yFor(d.diastolic)}`).join(' ');
 
   const diaAreaPoints = useMemo(() => {
-    const topLine = data
-      .map((d, i) => `${xFor(i)},${yFor(d.diastolic)}`)
-      .join(' ');
+    const topLine = data.map((d, i) => `${xFor(i)},${yFor(d.diastolic)}`).join(' ');
     const bottomRight = `${padding.left + chartW},${padding.top + chartH}`;
     const bottomLeft = `${padding.left},${padding.top + chartH}`;
     return `${topLine} ${bottomRight} ${bottomLeft}`;
@@ -124,18 +163,8 @@ function BPChart({width, data}) {
       />
 
       <Polygon points={diaAreaPoints} fill="#dfe4ea" opacity="0.5" />
-      <Polyline
-        points={diaPoints}
-        fill="none"
-        stroke="#7f8c8d"
-        strokeWidth="1.5"
-      />
-      <Polyline
-        points={sysPoints}
-        fill="none"
-        stroke="#4a4a4a"
-        strokeWidth="1.5"
-      />
+      <Polyline points={diaPoints} fill="none" stroke="#7f8c8d" strokeWidth="1.5" />
+      <Polyline points={sysPoints} fill="none" stroke="#4a4a4a" strokeWidth="1.5" />
 
       {data.map((d, i) => (
         <Circle
@@ -153,16 +182,9 @@ function BPChart({width, data}) {
         const cx = xFor(i);
         const cy = yFor(d.diastolic);
         const size = 6;
-        const points = `${cx},${cy - size} ${cx - size},${cy + size} ${
-          cx + size
-        },${cy + size}`;
+        const points = `${cx},${cy - size} ${cx - size},${cy + size} ${cx + size},${cy + size}`;
         return (
-          <Polygon
-            key={`dia-tri-${i}`}
-            points={points}
-            fill="#4a4a4a"
-            opacity="0.8"
-          />
+          <Polygon key={`dia-tri-${i}`} points={points} fill="#4a4a4a" opacity="0.8" />
         );
       })}
 
@@ -183,9 +205,7 @@ function BPChart({width, data}) {
         fill="#ffffff"
       />
       <Polygon
-        points={`${padding.left + chartW + 10},${todayDiaY - 6} ${
-          padding.left + chartW + 4
-        },${todayDiaY + 6} ${padding.left + chartW + 16},${todayDiaY + 6}`}
+        points={`${padding.left + chartW + 10},${todayDiaY - 6} ${padding.left + chartW + 4},${todayDiaY + 6} ${padding.left + chartW + 16},${todayDiaY + 6}`}
         fill="#0d6ea5"
       />
 
@@ -218,9 +238,9 @@ function BPChart({width, data}) {
         strokeWidth="2"
       />
 
-      {X_LABELS.map((lab, i) => (
+      {xLabels.map((lab, i) => (
         <SvgText
-          key={`x-${lab}`}
+          key={`x-${lab}-${i}`}
           x={xFor(i)}
           y={padding.top + chartH + 18}
           fontSize="10"
@@ -233,16 +253,29 @@ function BPChart({width, data}) {
   );
 }
 
-function BPMChart({width, data}) {
+function BPMChart({width, data, xLabels}) {
   const padding = {left: 10, right: 48, top: 18, bottom: 26};
   const w = width - 2;
   const h = SCREEN_HEIGHT * 0.22;
   const chartW = w - padding.left - padding.right;
   const chartH = h - padding.top - padding.bottom;
 
-  const Y_MIN = 50;
-  const Y_MAX = 90;
-  const bracketLabels = [90, 80, 70, 60, 50];
+  // --- derive Y range from data (so 100/110 will show) ---
+  const bpmVals = (data ?? []).map(d => Number(d.bpm)).filter(v => Number.isFinite(v));
+  // sensible fallbacks if no data
+  const rawMin = bpmVals.length ? Math.min(...bpmVals) : 50;
+  const rawMax = bpmVals.length ? Math.max(...bpmVals) : 90;
+
+  // add a little padding and clamp to practical bounds
+  let Y_MIN = Math.max(40, Math.floor((rawMin - 5) / 5) * 5);
+  let Y_MAX = Math.min(140, Math.ceil((rawMax + 5) / 5) * 5);
+  if (Y_MAX - Y_MIN < 20) { Y_MIN = Math.max(40, Y_MIN - 5); Y_MAX = Math.min(140, Y_MAX + 5); }
+
+  // build tick labels every 10 bpm within range (top -> bottom)
+  const bracketLabels = [];
+  for (let v = Math.ceil(Y_MAX / 10) * 10; v >= Y_MIN; v -= 10) {
+    bracketLabels.push(v);
+  }
 
   if (!data || data.length < 2) {
     return (
@@ -261,7 +294,7 @@ function BPMChart({width, data}) {
   }
 
   const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
-  const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
+  const yFor = val => padding.top + (Y_MAX - Number(val)) * (chartH / (Y_MAX - Y_MIN));
 
   const bpmPoints = data.map((d, i) => `${xFor(i)},${yFor(d.bpm)}`).join(' ');
   const todayX = xFor(data.length - 1);
@@ -283,21 +316,19 @@ function BPMChart({width, data}) {
         />
       ))}
 
-      <SvgLine
-        x1={padding.left}
-        x2={padding.left + chartW}
-        y1={yFor(72)}
-        y2={yFor(72)}
-        stroke="#7acb6a"
-        strokeWidth="1.5"
-      />
+      {/* goal line at 72, only if in visible range */}
+      {72 >= Y_MIN && 72 <= Y_MAX && (
+        <SvgLine
+          x1={padding.left}
+          x2={padding.left + chartW}
+          y1={yFor(72)}
+          y2={yFor(72)}
+          stroke="#7acb6a"
+          strokeWidth="1.5"
+        />
+      )}
 
-      <Polyline
-        points={bpmPoints}
-        fill="none"
-        stroke="#4a4a4a"
-        strokeWidth="1.5"
-      />
+      <Polyline points={bpmPoints} fill="none" stroke="#4a4a4a" strokeWidth="1.5" />
 
       {data.map((d, i) => (
         <Circle
@@ -311,6 +342,7 @@ function BPMChart({width, data}) {
         />
       ))}
 
+      {/* right rail + marker */}
       <SvgLine
         x1={padding.left + chartW + 10}
         x2={padding.left + chartW + 10}
@@ -328,6 +360,7 @@ function BPMChart({width, data}) {
         fill="#ffffff"
       />
 
+      {/* right-side tick labels */}
       {bracketLabels.map(val => (
         <React.Fragment key={`bpm-br-${val}`}>
           <SvgLine
@@ -348,6 +381,7 @@ function BPMChart({width, data}) {
         </React.Fragment>
       ))}
 
+      {/* vertical today cursor */}
       <SvgLine
         x1={todayX}
         x2={todayX}
@@ -357,9 +391,10 @@ function BPMChart({width, data}) {
         strokeWidth="2"
       />
 
-      {X_LABELS.map((lab, i) => (
+      {/* X labels */}
+      {xLabels.map((lab, i) => (
         <SvgText
-          key={`x-bpm-${lab}`}
+          key={`x-bpm-${lab}-${i}`}
           x={xFor(i)}
           y={padding.top + chartH + 18}
           fontSize="10"
@@ -371,6 +406,7 @@ function BPMChart({width, data}) {
     </Svg>
   );
 }
+
 
 export default function BloodPressure({ navigation }) {
   const [activeTab, setActiveTab] = useState('LIST');
@@ -388,37 +424,159 @@ export default function BloodPressure({ navigation }) {
 
   const toastTimeoutRef = useRef(null);
   const measurementTimeoutRef = useRef(null);
+  const scanGuardRef = useRef(false); // ← prevents duplicate scans
   const [batteryLevel, setBatteryLevel] = useState(null);
 
+  const [historicalData, setHistoricalData] = useState([]);
+  const [filterDays, setFilterDays] = useState(7);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  // const connectedDeviceRef = useRef(null);
 
-  // dynamic list of BP readings (most recent first)
-  const [bloodPressureData, setBloodPressureData] = useState([]);
+  const connectedDeviceRef = useRef({
+  name: null,
+  id: null,
+  batteryLevel: null
+});
 
+  const showToastMessage = (message, duration = 2000) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastMessage(message);
+    setShowToast(true);
+    toastTimeoutRef.current = setTimeout(() => setShowToast(false), duration);
+  };
+
+const storeMeasurementData = async (reading) => {
+  try {
+    const currentDevice = connectedDeviceRef.current;
+    
+    const deviceData = {
+      devId: currentDevice?.id || 'bp_device_001',
+      devType: DEV_TYPE,
+      data: {
+        systolic: reading.systolic,
+        diastolic: reading.diastolic,
+        pulse: reading.bpm,
+        mean: reading.mean,
+        timestamp: new Date().toISOString(),
+        date: reading.date,
+        time: reading.time,
+        deviceInfo: {
+          name: currentDevice?.name || 'Blood Pressure Monitor',
+          id: currentDevice?.id || 'unknown_device_id',
+          batteryLevel: currentDevice?.batteryLevel, // Battery info sent here
+          type: 'viatom'
+        }
+      }
+    };
+    
+    console.log('📤 Storing device data with battery:', deviceData);
+    await storeDeviceData(deviceData);
+    console.log('✅ Device data stored with battery info');
+
+    loadHistoricalData(filterDays);
+  } catch (error) {
+    console.error('❌ Failed to store device data:', error);
+  }
+};
+
+  const loadHistoricalData = async (days = 7) => {
+    try {
+      setIsLoading(true);
+      const data = await fetchHistoricalData(days);
+      const formattedData = data.map(item => ({
+        id: item.id,
+        date: new Date(item.createdAt).toLocaleDateString(),
+        time: new Date(item.createdAt).toLocaleTimeString(),
+        systolic: item.data.systolic,
+        diastolic: item.data.diastolic,
+        bpm: item.data.pulse,
+        mean: item.data.mean,
+        timestamp: item.createdAt
+      }));
+      setHistoricalData(formattedData);
+      setFilterDays(days);
+    } catch (error) {
+      console.error('Error loading historical data:', error);
+      showToastMessage('Failed to load historical data');
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadHistoricalData(filterDays);
+  };
+
+  const generateXLabels = (data) => {
+    if (!data || data.length === 0) return ['No Data'];
+    const dates = data.map(item => {
+      const date = new Date(item.timestamp || item.date);
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    });
+    const uniqueDates = [...new Set(dates)].slice(-7);
+    return uniqueDates;
+  };
+
+  const getDisplayData = () => {
+    // sort a copy (avoid mutating state)
+    return [...historicalData].sort((a, b) => {
+      const dateA = new Date(a.timestamp || a.date);
+      const dateB = new Date(b.timestamp || b.date);
+      return dateB - dateA;
+    });
+  };
+
+  // Add this useEffect to debug connected device state
+useEffect(() => {
+  console.log('🔧 Connected Device State Updated:', {
+    name: connectedDevice?.name,
+    id: connectedDevice?.id,
+    exists: !!connectedDevice
+  });
+}, [connectedDevice]);
+
+  // ----- Native Event Subscriptions (attach once) -----
   useEffect(() => {
-    // --- Device discovery
+    // Load initial historical data
+    loadHistoricalData(7);
+
     const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
       console.log('[BLE] Discovered:', device);
       setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
     });
 
-    // --- Connection
-    const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
-      console.log('[BLE] Connected:', device);
-      setConnectedDevice(device);
-    });
+const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
+  console.log('[BLE] Connected:', device);
+  setConnectedDevice(device);
+  // Store device info in ref with battery
+  connectedDeviceRef.current = {
+    name: device.name,
+    id: device.id,
+    batteryLevel: batteryLevel // Initialize with current battery level
+  };
+  console.log('💾 Stored device in ref with battery:', connectedDeviceRef.current);
+  ViatomDeviceManager.requestDeviceInfo?.();
+  ViatomDeviceManager.requestBPConfig?.();
+});
 
-    const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
-      console.log('[BLE] Disconnected:', payload);
-      setConnectedDevice(null);
-      setRealTimeData(null);
-      setIsMeasuring(false);
-      if (measurementTimeoutRef.current) {
-        clearTimeout(measurementTimeoutRef.current);
-        measurementTimeoutRef.current = null;
-      }
-    });
+const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
+  console.log('[BLE] Disconnected:', payload);
+  setConnectedDevice(null);
+  // Clear the ref when disconnected
+  connectedDeviceRef.current = null;
+  setRealTimeData(null);
+  setIsMeasuring(false);
+  if (measurementTimeoutRef.current) {
+    clearTimeout(measurementTimeoutRef.current);
+    measurementTimeoutRef.current = null;
+  }
+  // Native does a recovery scan. Nudge a normal scan soon for UX.
+  setTimeout(() => safeStartScan(), 600);
+});
 
-    // --- Real-time data (progress + final)
     const dataSubscription = ViatomDeviceManager.addListener('onRealTimeData', (data) => {
       console.log('[DATA] onRealTimeData:', data);
       handleRealTimeData(data);
@@ -426,13 +584,15 @@ export default function BloodPressure({ navigation }) {
 
 const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
   if (evt?.type !== 'BP_RESULT') return;
-
   console.log('[BP] Final Result received:', evt);
 
-  // Stop measuring in UI
   stopMeasurementUIOnly();
-
   const now = new Date();
+  
+  // Use the ref to get device info
+  const currentDevice = connectedDeviceRef.current;
+  console.log('💾 Device info from ref:', currentDevice);
+  
   const newReading = {
     id: Date.now(),
     date: now.toLocaleDateString(),
@@ -441,37 +601,35 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
     diastolic: Number(evt.diastolic),
     bpm: Number(evt.pulse),
     mean: Number(evt.meanPressure),
+    timestamp: now.toISOString(),
+    // Include device info from ref
+    deviceName: currentDevice?.name,
+    deviceId: currentDevice?.id
   };
-
-  setBloodPressureData((prev) => [newReading, ...prev].slice(0, 20));
-
-  // Update the real-time panel with final result
+  console.log('📝 Final reading with device:', { 
+    deviceName: currentDevice?.name, 
+    deviceId: currentDevice?.id 
+  });
+  storeMeasurementData(newReading);
   setRealTimeData({
     type: 'BP',
     systolic: newReading.systolic,
     diastolic: newReading.diastolic,
     pulse: newReading.bpm,
     mean: newReading.mean,
-    phase: 'done',              // optional, if you want to show a "done" state
+    phase: 'done',
   });
-
   showToastMessage(
     `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
     3000
   );
 });
 
-
-
-    // --- BP mode state
     const modeSubscription = ViatomDeviceManager.addListener('onBPModeChanged', (payload) => {
       console.log('[BP] Mode changed:', payload);
-      if (payload?.active === false) {
-        setIsMeasuring(false);
-      }
+      if (payload?.active === false) setIsMeasuring(false);
     });
 
-    // --- BP status (started/ending / snapshots)
     const statusSubscription = ViatomDeviceManager.addListener('onBPStatusChanged', (payload) => {
       console.log('[BP] Status:', payload);
       if (payload?.status === 'measurement_started') {
@@ -483,10 +641,8 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
         showToastMessage('Measurement complete');
         stopMeasurementUIOnly();
       }
-
     });
 
-    // --- Errors
     const errorSubscription = ViatomDeviceManager.addListener('onDeviceError', (err) => {
       console.warn('[BP] Error:', err);
       showToastMessage(err?.message || err?.error || 'Device error');
@@ -498,6 +654,7 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
       connectionSubscription.remove();
       disconnectionSubscription.remove();
       dataSubscription.remove();
+      resultSubscription.remove();
       modeSubscription.remove();
       statusSubscription.remove();
       errorSubscription.remove();
@@ -507,106 +664,110 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
     };
   }, []);
 
-  const showToastMessage = (message, duration = 2000) => {
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    setToastMessage(message);
-    setShowToast(true);
-    toastTimeoutRef.current = setTimeout(() => setShowToast(false), duration);
-  };
+  // ----- Safe scan wrapper to avoid duplicate scans -----
+  const safeStartScan = useCallback(() => {
+    if (scanGuardRef.current) return;
+    scanGuardRef.current = true;
+    console.log('[BLE] Safe scan start');
+    ViatomDeviceManager.startScan?.();
+    setTimeout(() => { scanGuardRef.current = false; }, 1500);
+  }, []);
 
-  const handleRealTimeData = (data) => {
-    if (!data || !data.type) return;
+  // ----- Screen focus: scan if not connected -----
+  useFocusEffect(
+    useCallback(() => {
+      if (!connectedDevice) {
+        // Clear list for fresh session and start a scan
+        setDevices([]);
+        safeStartScan();
+      }
+      return () => {
+        // optional: stop scan when leaving screen (native may still be connected)
+        ViatomDeviceManager.stopScan?.();
+      };
+    }, [connectedDevice, safeStartScan])
+  );
 
-      if (data.type === 'BP_STATUS_UPDATE') {
-    console.log('[UI] Battery update received:', data);
-    if (typeof data.batteryLevel === 'number') {
-      setBatteryLevel(data.batteryLevel);
+const handleRealTimeData = (data) => {
+  if (!data || !data.type) return;
+
+if (data.type === 'BP_STATUS_UPDATE') {
+  console.log('[UI] Battery update received:', data);
+  if (typeof data.batteryLevel === 'number') {
+    setBatteryLevel(data.batteryLevel);
+    // Store battery level in the device ref
+    if (connectedDeviceRef.current) {
+      connectedDeviceRef.current.batteryLevel = data.batteryLevel;
     }
-    return;
+    console.log('🔋 Battery level stored:', data.batteryLevel);
   }
-
-
-    // Small cue from native when live stream requested
-    if (data.type === 'BP_REALDATA_REQUESTED') {
-      showToastMessage(data.message || 'Request real data.');
-      setIsMeasuring(true);
-      return;
-    }
-
-    // Live progress
-// Live progress
-if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
-  const defl = !!data.isDeflating;
-  const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
-  const phase = data.phase || (defl ? 'deflating' : 'inflating');
-
-  setRealTimeData({
-    type: 'BP_PROGRESS',
-    pressure: Number(data.pressure) || 0,
-    isDeflating: defl,
-    isInflating: infl,
-    phase,
-    hasPulse: !!data.hasPulse,
-    pulseRate: Number(data.pulseRate) || 0,
-  });
-
-  // Optional UI cue
-  if (!defl && (data.pressure ?? 0) > 0) {
-    showToastMessage('Inflating...');
-  } else if (defl) {
-    showToastMessage('Deflating...');
-  }
-
-  setIsMeasuring(true);
   return;
 }
 
+  if (data.type === 'BP_REALDATA_REQUESTED') {
+    showToastMessage(data.message || 'Request real data.');
+    setIsMeasuring(true);
+    return;
+  }
 
+  if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+    const defl = !!data.isDeflating;
+    const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
+    const phase = data.phase || (defl ? 'deflating' : 'inflating');
+    setRealTimeData({
+      type: 'BP_PROGRESS',
+      pressure: Number(data.pressure) || 0,
+      isDeflating: defl,
+      isInflating: infl,
+      phase,
+      hasPulse: !!data.hasPulse,
+      pulseRate: Number(data.pulseRate) || 0,
+    });
+    if (!defl && (data.pressure ?? 0) > 0) showToastMessage('Inflating...');
+    else if (defl) showToastMessage('Deflating...');
+    setIsMeasuring(true);
+    return;
+  }
 
-    // Final result
-    if (data.type === 'BP') {
-      // Stop measuring in UI immediately
-      stopMeasurementUIOnly();
-
-      const now = new Date();
-      const newReading = {
-        id: Date.now(), // ensure stable key in list
-        date: now.toLocaleDateString(),
-        time: now.toLocaleTimeString(),
-        systolic: Number(data.systolic),
-        diastolic: Number(data.diastolic),
-        bpm: Number(data.pulse),
-        mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
-      };
-
-      setBloodPressureData((prev) => [newReading, ...prev].slice(0, 20));
-      showToastMessage(
-        `Measurement: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
-        3000
-      );
-
-      // Update the real-time panel with final result
-      setRealTimeData({
-        type: 'BP',
-        systolic: newReading.systolic,
-        diastolic: newReading.diastolic,
-        pulse: newReading.bpm,
-        mean: newReading.mean,
-      });
-
-      return;
-    }
-
-    // Optional: handle BP_STATUS if you want to render it
-    if (data.type === 'BP_STATUS') {
-      // console.log('[BP] Run Status snapshot:', data);
-      return;
-    }
-
-    // ECG or other types can be ignored here
+if (data.type === 'BP') {
+  stopMeasurementUIOnly();
+  const now = new Date();
+  // Use the ref to get device info
+  const currentDevice = connectedDeviceRef.current;
+  
+  const newReading = {
+    id: Date.now(),
+    date: now.toLocaleDateString(),
+    time: now.toLocaleTimeString(),
+    systolic: Number(data.systolic),
+    diastolic: Number(data.diastolic),
+    bpm: Number(data.pulse),
+    mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
+    timestamp: now.toISOString(),
+    // Include device info from ref
+    deviceName: currentDevice?.name,
+    deviceId: currentDevice?.id
   };
+  console.log('📝 Storing reading with device:', { 
+    deviceName: currentDevice?.name, 
+    deviceId: currentDevice?.id 
+  });
+  storeMeasurementData(newReading);
+  showToastMessage(
+    `Measurement: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+    3000
+  );
+  setRealTimeData({
+    type: 'BP',
+    systolic: newReading.systolic,
+    diastolic: newReading.diastolic,
+    pulse: newReading.bpm,
+    mean: newReading.mean,
+  });
+  return;
+}
+};
 
-  // Only update UI flags/timeouts here (native already exits BP mode)
   const stopMeasurementUIOnly = () => {
     if (measurementTimeoutRef.current) {
       clearTimeout(measurementTimeoutRef.current);
@@ -615,34 +776,37 @@ if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
     setIsMeasuring(false);
   };
 
+  // ----- Scanning helpers (modal buttons still use these) -----
   const startScanning = () => {
-    console.log('[BLE] Start scanning');
+    console.log('[BLE] Start scanning (manual)');
     setDevices([]);
     setIsScanning(true);
-    ViatomDeviceManager.startScan();
+    safeStartScan();
     setTimeout(() => {
       setIsScanning(false);
-      ViatomDeviceManager.stopScan();
+      ViatomDeviceManager.stopScan?.();
     }, 10000);
   };
 
   const stopScanning = () => {
     console.log('[BLE] Stop scanning');
     setIsScanning(false);
-    ViatomDeviceManager.stopScan();
+    ViatomDeviceManager.stopScan?.();
   };
 
   const connectToDevice = (deviceId) => {
     console.log('[BLE] Connect to:', deviceId);
-    ViatomDeviceManager.connectToDevice(deviceId);
+    ViatomDeviceManager.connectToDevice?.(deviceId);
   };
 
   const disconnectDevice = () => {
     console.log('[BLE] Disconnect');
-    ViatomDeviceManager.disconnectDevice();
+    ViatomDeviceManager.disconnectDevice?.();
     setConnectedDevice(null);
     setRealTimeData(null);
     setIsMeasuring(false);
+    // Let native recovery scan run; also nudge a normal scan
+    setTimeout(() => safeStartScan(), 600);
   };
 
   const startMeasurement = () => {
@@ -650,18 +814,14 @@ if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
       Alert.alert('Error', 'Please connect to a device first');
       return;
     }
-
-    // Reset panel
     setRealTimeData(null);
     setIsMeasuring(true);
 
     console.log('[BP] Starting measurement (native will request live stream)');
-    ViatomDeviceManager.startBPMeasurement();
+    ViatomDeviceManager.startBPMeasurement?.();
 
-    // (optional) ask for a status snapshot in parallel
     ViatomDeviceManager.requestBPRunStatus?.();
 
-    // Align with native timeout (3 minutes)
     if (measurementTimeoutRef.current) clearTimeout(measurementTimeoutRef.current);
     measurementTimeoutRef.current = setTimeout(() => {
       Alert.alert(
@@ -675,31 +835,69 @@ if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
 
   const stopMeasurement = () => {
     console.log('[BP] Stop measurement (user action)');
-    ViatomDeviceManager.stopBPMeasurement();
+    ViatomDeviceManager.stopBPMeasurement?.();
     stopMeasurementUIOnly();
   };
 
   const handleBack = () => navigation?.navigate?.('Home');
 
+  // ----- Modals -----
+  const renderFilterModal = () => (
+    <Modal
+      visible={showFilterModal}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setShowFilterModal(false)}
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Select Time Period</Text>
+          <Text style={styles.modalSubtitle}>Show data from last:</Text>
+
+          {[7, 14, 21, 30].map(days => (
+            <TouchableOpacity
+              key={days}
+              style={[styles.filterOption, filterDays === days && styles.filterOptionActive]}
+              onPress={() => { loadHistoricalData(days); setShowFilterModal(false); }}
+            >
+              <Text style={[styles.filterOptionText, filterDays === days && styles.filterOptionTextActive]}>
+                {days} {days === 1 ? 'Day' : 'Days'}
+              </Text>
+              {filterDays === days && <Text style={styles.selectedIndicator}>✓</Text>}
+            </TouchableOpacity>
+          ))}
+
+          <TouchableOpacity style={styles.cancelButton} onPress={() => setShowFilterModal(false)}>
+            <Text style={styles.cancelButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderDeviceConnectionModal = () => (
     <Modal
       visible={showDeviceModal}
       transparent
-      animationType="slide"
+      animationType="fade"
       onRequestClose={() => setShowDeviceModal(false)}
+      onShow={() => {
+        // auto-scan when opening modal while disconnected
+        if (!connectedDevice) startScanning();
+      }}
     >
-      <View style={styles.modalContainer}>
-        <View style={styles.modalContent}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalCard}>
           <Text style={styles.modalTitle}>Connect to BP Device</Text>
 
           {isLoading ? (
             <View style={{ alignItems: 'center', padding: 20 }}>
               <ActivityIndicator size="large" color={globalStyles.primaryColor.color} />
-              <Text style={{ marginTop: 10 }}>Connecting...</Text>
+              <Text style={{ marginTop: 10, color: '#666' }}>Connecting...</Text>
             </View>
           ) : (
             <>
-              <Text style={styles.modalText}>
+              <Text style={styles.modalSubtitle}>
                 {connectedDevice
                   ? 'Connected to Device'
                   : isScanning
@@ -709,45 +907,57 @@ if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
 
               {!connectedDevice && (
                 <>
-                  <ScrollView style={{ maxHeight: 200, width: '100%', marginVertical: 10 }}>
+                  <ScrollView style={styles.deviceList} showsVerticalScrollIndicator={false}>
                     {devices.length === 0 ? (
-                      <Text style={{ textAlign: 'center', color: '#666', marginVertical: 10 }}>
-                        {isScanning ? 'Scanning for devices...' : 'No devices found. Tap "Scan" to search.'}
-                      </Text>
+                      <View style={styles.noDevicesContainer}>
+                        <Text style={styles.noDevicesText}>
+                          {isScanning ? 'Scanning for devices...' : 'No devices found. Tap "Scan" to search.'}
+                        </Text>
+                      </View>
                     ) : (
                       devices.map((d, idx) => (
                         <TouchableOpacity
                           key={`${d.id ?? idx}`}
-                          style={{ padding: 10, borderBottomWidth: 1, borderColor: '#eee' }}
+                          style={styles.deviceItem}
                           onPress={() => connectToDevice(d.id)}
                         >
-                          <Text style={{ fontWeight: '600' }}>{d.name ?? 'Unknown Device'}</Text>
-                          {d.id && <Text style={{ color: '#666', fontSize: 12 }}>{d.id}</Text>}
+                          <View style={styles.deviceIcon}>
+                            <Text style={styles.deviceIconText}>💓</Text>
+                          </View>
+                          <View style={styles.deviceInfo}>
+                            <Text style={styles.deviceName}>{d.name ?? 'Unknown Device'}</Text>
+                            {d.id && <Text style={styles.deviceId}>{d.id}</Text>}
+                          </View>
+                          <View style={styles.connectIndicator}>
+                            <Text style={styles.connectIndicatorText}>Connect</Text>
+                          </View>
                         </TouchableOpacity>
                       ))
                     )}
                   </ScrollView>
 
-                  {!isScanning ? (
-                    <TouchableOpacity style={styles.connectButton} onPress={startScanning}>
-                      <Text style={styles.connectButtonText}>Scan for Devices</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity style={styles.cancelButton} onPress={stopScanning}>
-                      <Text style={styles.cancelButtonText}>Stop Scanning</Text>
-                    </TouchableOpacity>
-                  )}
+                  <View style={styles.modalButtons}>
+                    {!isScanning ? (
+                      <TouchableOpacity style={styles.primaryButton} onPress={startScanning}>
+                        <Text style={styles.primaryButtonText}>Scan for Devices</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity style={styles.secondaryButton} onPress={stopScanning}>
+                        <Text style={styles.secondaryButtonText}>Stop Scanning</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </>
               )}
 
               <TouchableOpacity
-                style={styles.cancelButton}
+                style={styles.closeButton}
                 onPress={() => {
                   setShowDeviceModal(false);
                   if (isScanning) stopScanning();
                 }}
               >
-                <Text style={styles.cancelButtonText}>Close</Text>
+                <Text style={styles.closeButtonText}>Close</Text>
               </TouchableOpacity>
             </>
           )}
@@ -756,37 +966,46 @@ if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
     </Modal>
   );
 
-const renderConnectionStatus = () => (
-  <View style={styles.connectionStatus}>
-    <View
-      style={[
-        styles.statusIndicator,
-        { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
-      ]}
-    />
-    <Text style={styles.statusText}>
-      {connectedDevice ? 'Connected' : 'Disconnected'}
-    </Text>
+  // ----- Header connection status row -----
+  const renderConnectionStatus = () => (
+    <View style={styles.connectionStatus}>
+      <View style={styles.statusSection}>
+        <View
+          style={[
+            styles.statusIndicator,
+            { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
+          ]}
+        />
+        <Text style={styles.statusText}>
+          {connectedDevice ? 'Connected' : 'Disconnected'}
+        </Text>
+      </View>
 
-    {/* Battery level display */}
-    {batteryLevel !== null && (
-      <Text style={{ marginLeft: 10, color: '#333', fontWeight: '600' }}>
-        🔋 {batteryLevel}%
-      </Text>
-    )}
+      {batteryLevel !== null && (
+        <View style={styles.batterySection}>
+          <Text style={styles.batteryText}>🔋 {batteryLevel}%</Text>
+        </View>
+      )}
 
-    <TouchableOpacity
-      style={styles.connectButtonSmall}
-      onPress={() => setShowDeviceModal(true)}>
-      <Text style={styles.connectButtonTextSmall}>
-        {connectedDevice ? 'Disconnect' : 'Connect'}
-      </Text>
-    </TouchableOpacity>
-  </View>
-);
-
-
-
+      <View style={styles.connectSection}>
+        <TouchableOpacity
+          style={[styles.connectButtonSmall, !connectedDevice && styles.connectButtonActive]}
+          onPress={() => {
+            if (connectedDevice) {
+              // Behave like a real disconnect pill when connected
+              disconnectDevice();
+            } else {
+              setDevices([]); // fresh list
+              setShowDeviceModal(true); // modal will auto-start scan on show
+            }
+          }}>
+          <Text style={styles.connectButtonTextSmall}>
+            {connectedDevice ? 'Disconnect' : 'Connect'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 
   const renderDeviceControls = () => (
     <View style={styles.controlsContainer}>
@@ -797,12 +1016,6 @@ const renderConnectionStatus = () => (
       >
         <Text style={styles.controlButtonText}>{isMeasuring ? 'Stop Measurement' : 'Start Measurement'}</Text>
       </TouchableOpacity>
-
-      {connectedDevice && (
-        <TouchableOpacity style={[styles.controlButton, { minWidth: 100 }]} onPress={disconnectDevice}>
-          <Text style={styles.controlButtonText}>Disconnect</Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 
@@ -813,7 +1026,6 @@ const renderConnectionStatus = () => (
       <View style={styles.realTimeContainer}>
         <Text style={styles.realTimeTitle}>Real-time Data</Text>
 
-        {/* Live Pressure */}
         {realTimeData.type === 'BP_PROGRESS' && (
           <>
             <View style={styles.measurementRow}>
@@ -828,18 +1040,16 @@ const renderConnectionStatus = () => (
               </Text>
             </View>
 
-          <View style={styles.measurementRow}>
-            <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
-            <Text
-              style={[
-                styles.measurementValue,
-                { color: realTimeData.isDeflating ? '#f39c12' : '#3498db' },
-              ]}>
-              {realTimeData.isDeflating ? 'Deflating...' : 'Inflating...'}
-            </Text>
-          </View>
-
-
+            <View style={styles.measurementRow}>
+              <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
+              <Text
+                style={[
+                  styles.measurementValue,
+                  { color: realTimeData.isDeflating ? '#f39c12' : '#3498db' },
+                ]}>
+                {realTimeData.isDeflating ? 'Deflating...' : 'Inflating...'}
+              </Text>
+            </View>
 
             {realTimeData.hasPulse && realTimeData.pulseRate > 0 && (
               <View style={styles.measurementRow}>
@@ -852,7 +1062,6 @@ const renderConnectionStatus = () => (
           </>
         )}
 
-        {/* Final Result */}
         {realTimeData.type === 'BP' && (
           <>
             <View style={styles.measurementRow}>
@@ -878,7 +1087,6 @@ const renderConnectionStatus = () => (
           </>
         )}
 
-        {/* Measuring indicator */}
         {isMeasuring && (
           <View style={styles.measuringIndicator}>
             <ActivityIndicator size="small" color={globalStyles.primaryColor.color} />
@@ -890,6 +1098,20 @@ const renderConnectionStatus = () => (
       </View>
     );
   };
+
+  // const displayData = getDisplayData();
+  // const chartData = displayData.slice(0, 7).reverse();
+  // const xLabels = generateXLabels(chartData);
+  const displayData = getDisplayData();
+
+// FIXED: Use all historical data from the filtered period, sorted chronologically
+const chartData = [...historicalData].sort((a, b) => {
+  const dateA = new Date(a.timestamp || a.date);
+  const dateB = new Date(b.timestamp || b.date);
+  return dateA - dateB; // Sort oldest to newest for proper timeline
+});
+
+const xLabels = generateXLabels(chartData);
 
   return (
     <View style={styles.container}>
@@ -910,22 +1132,14 @@ const renderConnectionStatus = () => (
         <TouchableOpacity
           style={[styles.tab, activeTab === 'LIST' && styles.activeTab]}
           onPress={() => setActiveTab('LIST')}>
-          <Text
-            style={[
-              styles.tabText,
-              activeTab === 'LIST' && styles.activeTabText,
-            ]}>
+          <Text style={[styles.tabText, activeTab === 'LIST' && styles.activeTabText]}>
             LIST
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'GRAPH' && styles.activeTab]}
           onPress={() => setActiveTab('GRAPH')}>
-          <Text
-            style={[
-              styles.tabText,
-              activeTab === 'GRAPH' && styles.activeTabText,
-            ]}>
+          <Text style={[styles.tabText, activeTab === 'GRAPH' && styles.activeTabText]}>
             GRAPH
           </Text>
         </TouchableOpacity>
@@ -935,91 +1149,92 @@ const renderConnectionStatus = () => (
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}>
-          {bloodPressureData.length === 0 ? (
-            <View style={{padding: 20, alignItems: 'center'}}>
-              <Text style={{color: '#666'}}>
-                No blood pressure readings yet.
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[globalStyles.primaryColor.color]}
+            />
+          }>
+          {historicalData.length > 0 && (
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderText}>
+                Last {filterDays} Days
               </Text>
             </View>
+          )}
+
+          {historicalData.length === 0 ? (
+            <View style={{padding: 20, alignItems: 'center'}}>
+              <Text style={{color: '#666'}}>No blood pressure readings yet.</Text>
+            </View>
           ) : (
-            bloodPressureData.map(item => (
-              <View key={item.id} style={styles.dayBlock}>
-                <View style={styles.dateHeader}>
-                  <Text style={styles.dateHeaderText}>{item.date}</Text>
-                </View>
-
-                <View style={styles.card}>
-                  <Text style={styles.timeText}>{item.time}</Text>
-                  <View style={styles.row}>
-                    <Text style={styles.bpText}>
-                      {item.systolic}/{item.diastolic}
-                      <Text style={styles.unit}> mmHg</Text>
-                    </Text>
-                    <Text style={styles.bpmText}>
-                      {item.bpm}
-                      <Text style={styles.unitSmall}> bpm</Text>
-                    </Text>
+            <>
+              {historicalData.map(item => (
+                <View key={`historical-${item.id}`} style={styles.dayBlock}>
+                  <View style={styles.dateHeader}>
+                    <Text style={styles.dateHeaderText}>{item.date}</Text>
                   </View>
 
-                  <View style={styles.colorBarWrapper}>
-                    <View
-                      style={[
-                        styles.colorSegment,
-                        {backgroundColor: '#50b36d'},
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.colorSegment,
-                        {backgroundColor: '#9bd47d'},
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.colorSegment,
-                        {backgroundColor: '#ffd060'},
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.colorSegment,
-                        {backgroundColor: '#ffa43b'},
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.colorSegment,
-                        {backgroundColor: '#ff7a2b'},
-                      ]}
-                    />
+                  <View style={styles.card}>
+                    <Text style={styles.timeText}>{item.time}</Text>
+                    <View style={styles.row}>
+                      <Text style={styles.bpText}>
+                        {item.systolic}/{item.diastolic}
+                        <Text style={styles.unit}> mmHg</Text>
+                      </Text>
+                      <Text style={styles.bpmText}>
+                        {item.bpm}
+                        <Text style={styles.unitSmall}> bpm</Text>
+                      </Text>
+                    </View>
 
-                    <View
-                      style={[
-                        styles.marker,
-                        {left: `${getMarkerLeftPercent(item.systolic)}%`},
-                      ]}
-                    />
+                    <View style={styles.colorBarWrapper}>
+                      <View style={[styles.colorSegment, {backgroundColor: '#50b36d'}]} />
+                      <View style={[styles.colorSegment, {backgroundColor: '#9bd47d'}]} />
+                      <View style={[styles.colorSegment, {backgroundColor: '#ffd060'}]} />
+                      <View style={[styles.colorSegment, {backgroundColor: '#ffa43b'}]} />
+                      <View style={[styles.colorSegment, {backgroundColor: '#ff7a2b'}]} />
+
+                      <View
+                        style={[
+                          styles.marker,
+                          {left: `${getMarkerLeftPercent(item.systolic)}%`},
+                        ]}
+                      />
+                    </View>
                   </View>
                 </View>
-              </View>
-            ))
+              ))}
+            </>
           )}
         </ScrollView>
       ) : (
         <View style={{flex: 1}}>
-          <TouchableOpacity activeOpacity={0.8} style={styles.filterFab}>
-            <Svg width={28} height={28} viewBox="0 0 24 24">
-              <Polygon
-                points="4,5 20,5 14,12 14,18 10,20 10,12"
-                fill="#ffffff"
-              />
-            </Svg>
-          </TouchableOpacity>
-
           <ScrollView
             contentContainerStyle={styles.graphScrollContent}
-            showsVerticalScrollIndicator={false}>
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[globalStyles.primaryColor.color]}
+              />
+            }>
+            <View style={styles.graphHeader}>
+              <Text style={styles.graphTitle}>Blood Pressure Trends</Text>
+              <TouchableOpacity 
+                style={styles.filterIconButton}
+                onPress={() => setShowFilterModal(true)}
+              >
+                <Image 
+                  source={require('./assets/filter_icon.png')} 
+                  style={styles.filterIcon}
+                />
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.graphCard}>
               <View style={styles.graphHeader}>
                 <View style={[styles.iconCircle, {backgroundColor: '#7acb6a'}]}>
@@ -1036,15 +1251,15 @@ const renderConnectionStatus = () => (
                 <View style={{flex: 1}}>
                   <Text style={styles.smallMuted}>Today</Text>
                   <Text style={styles.smallMuted}>
-                    {bloodPressureData[0]?.time ?? '—'}
+                    {displayData[0]?.time ?? '—'}
                   </Text>
                   <Text style={styles.goalText}>
                     Your goal: SYS 120 / DIA 80
                   </Text>
                 </View>
                 <Text style={styles.bigReading}>
-                  {bloodPressureData[0]
-                    ? `${bloodPressureData[0].systolic}/${bloodPressureData[0].diastolic}`
+                  {displayData[0]
+                    ? `${displayData[0].systolic}/${displayData[0].diastolic}`
                     : '—/—'}{' '}
                   <Text style={styles.mmHg}>mmHg</Text>
                 </Text>
@@ -1052,7 +1267,8 @@ const renderConnectionStatus = () => (
 
               <BPChart
                 width={SCREEN_WIDTH - 20}
-                data={bloodPressureData.length ? bloodPressureData : []}
+                data={chartData}
+                xLabels={xLabels}
               />
             </View>
 
@@ -1071,19 +1287,20 @@ const renderConnectionStatus = () => (
                 <View style={{flex: 1}}>
                   <Text style={styles.smallMuted}>Today</Text>
                   <Text style={styles.smallMuted}>
-                    {bloodPressureData[0]?.time ?? '—'}
+                    {displayData[0]?.time ?? '—'}
                   </Text>
                   <Text style={styles.goalText}>Your goal: 72</Text>
                 </View>
                 <Text style={styles.bigReadingRight}>
-                  {bloodPressureData[0] ? `${bloodPressureData[0].bpm}` : '—'}{' '}
+                  {displayData[0] ? `${displayData[0].bpm}` : '—'}{' '}
                   <Text style={styles.mmHg}>bpm</Text>
                 </Text>
               </View>
 
               <BPMChart
                 width={SCREEN_WIDTH - 20}
-                data={bloodPressureData.length ? bloodPressureData : []}
+                data={chartData}
+                xLabels={xLabels}
               />
             </View>
           </ScrollView>
@@ -1091,6 +1308,7 @@ const renderConnectionStatus = () => (
       )}
 
       {renderDeviceConnectionModal()}
+      {renderFilterModal()}
 
       {isLoading && (
         <View style={styles.loadingOverlay}>
@@ -1098,7 +1316,7 @@ const renderConnectionStatus = () => (
             size="large"
             color={globalStyles.primaryColor.color}
           />
-          <Text style={styles.loadingText}>Processing...</Text>
+          <Text style={styles.loadingText}>Loading...</Text>
         </View>
       )}
 
@@ -1112,10 +1330,7 @@ const renderConnectionStatus = () => (
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#ebf2f9',
-  },
+  container: { flex: 1, backgroundColor: '#ebf2f9' },
   header: {
     width: '100%',
     height: SCREEN_HEIGHT * 0.08,
@@ -1142,104 +1357,152 @@ const styles = StyleSheet.create({
   connectionStatus: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
+    justifyContent: 'space-between',
+    padding: 16,
     backgroundColor: '#fff',
     margin: 10,
-    borderRadius: 8,
+    borderRadius: 12,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 2,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  statusSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  batterySection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 12,
+  },
+  connectSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   statusIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     marginRight: 8,
   },
   statusText: {
-    flex: 1,
     fontSize: 16,
     fontWeight: '500',
+    color: '#333',
+  },
+  batteryText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
   },
   connectButtonSmall: {
+    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  connectButtonActive: {
     backgroundColor: globalStyles.primaryColor.color,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 4,
   },
   connectButtonTextSmall: {
-    color: '#fff',
+    color: '#666',
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   controlsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    padding: 10,
-    backgroundColor: '#fff',
-    margin: 10,
-    borderRadius: 8,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 2,
+    paddingHorizontal: 10,
+    paddingBottom: 10,
   },
   controlButton: {
     backgroundColor: globalStyles.primaryColor.color,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 6,
-    minWidth: 140,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: 'center',
+    marginHorizontal: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
   },
   controlButtonActive: {
     backgroundColor: '#F44336',
   },
   controlButtonText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
   },
   realTimeContainer: {
     backgroundColor: '#fff',
-    padding: 15,
+    padding: 18,
     margin: 10,
-    borderRadius: 8,
+    borderRadius: 12,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 2,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   realTimeTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 10,
+    marginBottom: 12,
     color: '#333',
   },
   measurementRow: {
     flexDirection: 'row',
-    marginBottom: 5,
+    marginBottom: 8,
+    alignItems: 'center',
   },
   measurementLabel: {
     fontWeight: '600',
     color: '#666',
+    fontSize: 14,
   },
   measurementValue: {
     color: '#333',
     fontWeight: 'bold',
+    fontSize: 14,
   },
   measuringIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
   },
   measuringText: {
     marginLeft: 8,
     color: '#666',
+    fontSize: 14,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
   modalContainer: {
     flex: 1,
@@ -1253,16 +1516,123 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     width: '80%',
+    maxWidth: 300
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
-    marginBottom: 15,
+    marginBottom: 8,
+    textAlign: 'center',
+    color: '#333',
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    marginBottom: 20,
+    textAlign: 'center',
+    color: '#666',
   },
   modalText: {
     fontSize: 16,
     marginBottom: 20,
     textAlign: 'center',
+  },
+  deviceList: {
+    maxHeight: 200,
+    width: '100%',
+    marginVertical: 16,
+  },
+  noDevicesContainer: {
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noDevicesText: {
+    textAlign: 'center',
+    color: '#999',
+    fontSize: 14,
+  },
+  deviceItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  deviceIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  deviceIconText: {
+    fontSize: 18,
+  },
+  deviceInfo: {
+    flex: 1,
+  },
+  deviceName: {
+    fontWeight: '600',
+    fontSize: 16,
+    color: '#333',
+  },
+  deviceId: {
+    color: '#666',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  connectIndicator: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: globalStyles.primaryColor.color,
+    borderRadius: 12,
+  },
+  connectIndicatorText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalButtons: {
+    width: '100%',
+    marginBottom: 16,
+  },
+  primaryButton: {
+    backgroundColor: globalStyles.primaryColor.color,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  primaryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  secondaryButtonText: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  closeButton: {
+    padding: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  closeButtonText: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '500',
   },
   connectButton: {
     backgroundColor: globalStyles.primaryColor.color,
@@ -1270,6 +1640,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 5,
     marginBottom: 10,
+    width: '100%',
+    alignItems: 'center',
   },
   connectButtonText: {
     color: '#fff',
@@ -1278,10 +1650,72 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     padding: 10,
+    marginTop: 10,
   },
   cancelButtonText: {
     color: '#666',
     fontSize: 16,
+  },
+  filterOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    width: '100%',
+  },
+  filterOptionActive: {
+    backgroundColor: '#f8f9fa',
+  },
+  filterOptionText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  filterOptionTextActive: {
+    color: globalStyles.primaryColor.color,
+    fontWeight: '600',
+  },
+  selectedIndicator: {
+    color: globalStyles.primaryColor.color,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  graphHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+  },
+  graphTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  filterIconButton: {
+    padding: 8,
+  },
+  filterIcon: {
+    width: 34,
+    height: 34,
+    tintColor: globalStyles.primaryColor.color,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    backgroundColor: '#f8f9fa',
+    marginBottom: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: globalStyles.primaryColor.color,
+  },
+  sectionHeaderText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1303,10 +1737,10 @@ const styles = StyleSheet.create({
   tab: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   activeTab: {
-    borderBottomWidth: 2,
+    borderBottomWidth: 3,
     borderBottomColor: '#fff',
   },
   tabText: {
@@ -1339,13 +1773,13 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 15,
+    borderRadius: 12,
+    padding: 16,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 2,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   timeText: {
     color: '#666',
@@ -1403,19 +1837,14 @@ const styles = StyleSheet.create({
   },
   graphCard: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 15,
+    borderRadius: 12,
+    padding: 16,
     marginBottom: 15,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 2,
-  },
-  graphHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   iconCircle: {
     width: 32,
@@ -1471,23 +1900,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'normal',
     color: '#666',
-  },
-  filterFab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: globalStyles.primaryColor.color,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    shadowOffset: {width: 0, height: 2},
-    elevation: 5,
   },
   toastContainer: {
     position: 'absolute',
