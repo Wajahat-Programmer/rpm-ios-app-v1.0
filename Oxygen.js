@@ -2,11 +2,24 @@
 // Keeps: realtime + PPG + session cards + auto-finalize + auto-reconnect
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, SafeAreaView, Image } from 'react-native';
+import { 
+  View, 
+  Text, 
+  FlatList, 
+  TouchableOpacity, 
+  StyleSheet, 
+  SafeAreaView, 
+  Image,
+  Dimensions,
+  ScrollView,
+  RefreshControl,
+  ActivityIndicator
+} from 'react-native';
 import Svg, { Polyline, Line, Rect } from 'react-native-svg';
 import O2 from './ViatomO2Manager';
 import globalStyles from './globalStyles';
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const BRAND = (globalStyles?.primaryColor?.color) || '#3b82f6'; // fallback if not defined
 const DEVICE_IMG = require('./assets/Oxyfit.jpg');
 const MAX_PPG_POINTS = 600;
@@ -17,7 +30,7 @@ const safeAvg = (arr) => (arr.length ? Number((arr.reduce((a,b)=>a+b,0)/arr.leng
 const safeMin = (arr) => (arr.length ? Math.min(...arr) : null);
 const safeMax = (arr) => (arr.length ? Math.max(...arr) : null);
 
-export default function Oxygen() {
+export default function Oxygen({ navigation }) {
   const [devices, setDevices] = useState([]);
   const [connected, setConnected] = useState(null);
   const [ready, setReady] = useState(false);
@@ -43,6 +56,10 @@ export default function Oxygen() {
   // Auto-reconnect
   const lastDeviceIdRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+
+  // New state for tabs and refresh
+  const [activeTab, setActiveTab] = useState('LIST');
+  const [refreshing, setRefreshing] = useState(false);
 
   const finalizeSessionIfAny = () => {
     const s = sessionRef.current;
@@ -190,15 +207,54 @@ export default function Oxygen() {
     </TouchableOpacity>
   );
 
+  // Refresh function for pull-to-refresh
+  const onRefresh = async () => {
+    setRefreshing(true);
+    // Simulate data refresh
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 1000);
+  };
+
+  // Helper function to generate X labels for charts
+  const generateXLabels = (data) => {
+    if (!data || data.length === 0) return ['No Data'];
+    const dates = data.map(item => {
+      const date = new Date(item.startTs);
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    });
+    const uniqueDates = [...new Set(dates)].slice(-7);
+    return uniqueDates;
+  };
+
+  // Get display data sorted by timestamp
+  const getDisplayData = () => {
+    return [...sessionCards].sort((a, b) => {
+      const dateA = new Date(a.startTs);
+      const dateB = new Date(b.startTs);
+      return dateB - dateA;
+    });
+  };
+
+  // Prepare chart data
+  const displayData = getDisplayData();
+  const chartData = [...sessionCards].sort((a, b) => {
+    const dateA = new Date(a.startTs);
+    const dateB = new Date(b.startTs);
+    return dateA - dateB;
+  });
+  const xLabels = generateXLabels(chartData);
+
   return (
-    <SafeAreaView style={styles.root}>
-      {/* Colored Header */}
-      <View style={[styles.header, { backgroundColor: BRAND }]}>
-        <Text style={styles.headerTitle}>Oxygen</Text>
-        <Text style={styles.headerSub}>
-          {connected ? (ready ? 'Connected' : 'Connecting…') : 'Scanning…'}  ·  {status}
-        </Text>
-      </View>
+    <View style={styles.container}>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: BRAND }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation?.goBack?.()}>
+            <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Oxygen</Text>
+        </View>
+      </SafeAreaView>
 
       {/* Content below header */}
       {!connected ? (
@@ -219,7 +275,7 @@ export default function Oxygen() {
           )}
         </>
       ) : (
-        <View style={{ padding: 12 }}>
+        <View style={{ flex: 1 }}>
           {/* Device status row */}
           <View style={styles.deviceRow}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -239,43 +295,32 @@ export default function Oxygen() {
             </View>
           </View>
 
-          {/* Oxygen Level card */}
-          <View style={styles.bigCard}>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>Oxygen Level</Text>
-              <Text style={[styles.piPill, { borderColor: '#E5E7EB' }]}>PI: {pi != null ? `${pi.toFixed(1)}%` : '--'}</Text>
+          {/* Oxygen Level and Pulse Rate cards in parallel */}
+          <View style={styles.parallelCards}>
+            {/* Oxygen Level card */}
+            <View style={styles.smallCard}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardTitle}>Oxygen Level</Text>
+              </View>
+              <View style={styles.valueRow}>
+                <Text style={[styles.bigValue, { color: BRAND }]}>{spo2 != null ? spo2 : '--'}</Text>
+                <Text style={styles.bigUnit}>%</Text>
+              </View>
+              <View style={styles.piRow}>
+                <Text style={[styles.piText, { borderColor: '#E5E7EB' }]}>PI: {pi != null ? `${pi.toFixed(1)}%` : '--'}</Text>
+              </View>
             </View>
-            <View style={styles.valueRow}>
-              <Text style={[styles.bigValue, { color: BRAND }]}>{spo2 != null ? spo2 : '--'}</Text>
-              <Text style={styles.bigUnit}>%</Text>
-            </View>
-            <Svg width={320} height={100} style={{ alignSelf: 'center' }}>
-              <Rect x="0" y="0" width="320" height="100" rx="8" fill="#FFFFFF" />
-              {oxyLine.gridY.map((y, i) => (
-                <Line key={i} x1="0" x2="320" y1={y} y2={y} stroke="#E5E7EB" strokeWidth="1" />
-              ))}
-              {oxyLine.points ? <Polyline points={oxyLine.points} stroke={BRAND} strokeWidth="2" fill="none" /> : null}
-            </Svg>
-            <View style={styles.axisRow}><Text style={styles.axisText}>1 min ago</Text><Text style={styles.axisText}>Now</Text></View>
-          </View>
 
-          {/* Pulse Rate card */}
-          <View style={styles.bigCard}>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>Pulse Rate</Text>
+            {/* Pulse Rate card */}
+            <View style={styles.smallCard}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardTitle}>Pulse Rate</Text>
+              </View>
+              <View style={styles.valueRow}>
+                <Text style={[styles.bigValue, { color: BRAND }]}>{pr != null ? pr : '--'}</Text>
+                <Text style={styles.bigUnit}>/min</Text>
+              </View>
             </View>
-            <View style={styles.valueRow}>
-              <Text style={[styles.bigValue, { color: BRAND }]}>{pr != null ? pr : '--'}</Text>
-              <Text style={styles.bigUnit}>/min</Text>
-            </View>
-            <Svg width={320} height={100} style={{ alignSelf: 'center' }}>
-              <Rect x="0" y="0" width="320" height="100" rx="8" fill="#FFFFFF" />
-              {prLine.gridY.map((y, i) => (
-                <Line key={i} x1="0" x2="320" y1={y} y2={y} stroke="#E5E7EB" strokeWidth="1" />
-              ))}
-              {prLine.points ? <Polyline points={prLine.points} stroke={BRAND} strokeWidth="2" fill="none" /> : null}
-            </Svg>
-            <View style={styles.axisRow}><Text style={styles.axisText}>1 min ago</Text><Text style={styles.axisText}>Now</Text></View>
           </View>
 
           {/* PPG graph */}
@@ -289,16 +334,446 @@ export default function Oxygen() {
             </Svg>
           </View>
 
-          {/* Session summary cards */}
-          {sessionCards.length > 0 && (
-            <View style={{ paddingHorizontal: 0, paddingBottom: 24 }}>
-              <Text style={styles.sectionTitle}>Previous Sessions</Text>
-              {sessionCards.map((it) => <SessionCard key={it.id} item={it} />)}
+          {/* Tab Container */}
+          <View style={styles.tabContainer}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'LIST' && styles.activeTab]}
+              onPress={() => setActiveTab('LIST')}>
+              <Text style={[styles.tabText, activeTab === 'LIST' && styles.activeTabText]}>
+                LIST
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'GRAPH' && styles.activeTab]}
+              onPress={() => setActiveTab('GRAPH')}>
+              <Text style={[styles.tabText, activeTab === 'GRAPH' && styles.activeTabText]}>
+                GRAPH
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Content based on active tab */}
+          {activeTab === 'LIST' ? (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[BRAND]}
+                />
+              }>
+              {sessionCards.length > 0 && (
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionHeaderText}>
+                    All Sessions ({sessionCards.length})
+                  </Text>
+                </View>
+              )}
+
+              {sessionCards.length === 0 ? (
+                <View style={{padding: 20, alignItems: 'center'}}>
+                  <Text style={{color: '#666'}}>No oxygen readings yet.</Text>
+                </View>
+              ) : (
+                <>
+                  {displayData.map(item => (
+                    <SessionCard key={item.id} item={item} />
+                  ))}
+                </>
+              )}
+            </ScrollView>
+          ) : (
+            <View style={{flex: 1}}>
+              <ScrollView
+                contentContainerStyle={styles.graphScrollContent}
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    colors={[BRAND]}
+                  />
+                }>
+                <View style={styles.graphHeader}>
+                  <Text style={styles.graphTitle}>Oxygen Trends</Text>
+                </View>
+
+                <View style={styles.graphCard}>
+                  <View style={styles.graphHeader}>
+                    <View style={[styles.iconCircle, {backgroundColor: BRAND}]}>
+                      <Text style={styles.iconText}>O₂</Text>
+                    </View>
+                    <Text style={styles.graphTitleBlue}>OXYGEN LEVEL</Text>
+                    <View style={{flex: 1}} />
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.infoRow}>
+                    <View style={{flex: 1}}>
+                      <Text style={styles.smallMuted}>Latest</Text>
+                      <Text style={styles.smallMuted}>
+                        {displayData[0] ? new Date(displayData[0].startTs).toLocaleTimeString() : '—'}
+                      </Text>
+                      <Text style={styles.goalText}>
+                        Your goal: 95% or higher
+                      </Text>
+                    </View>
+                    <Text style={styles.bigReading}>
+                      {displayData[0]
+                        ? `${displayData[0].avgSpO2}`
+                        : '—'}{' '}
+                      <Text style={styles.percent}>%</Text>
+                    </Text>
+                  </View>
+
+                  {chartData.length > 0 ? (
+                    <OxygenChart
+                      width={SCREEN_WIDTH - 20}
+                      data={chartData}
+                      xLabels={xLabels}
+                    />
+                  ) : (
+                    <View style={styles.noChartData}>
+                      <Text style={styles.noChartDataText}>Not enough data to show chart</Text>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.graphCard}>
+                  <View style={styles.graphHeader}>
+                    <View style={[styles.iconCircle, {backgroundColor: '#cfecc5'}]}>
+                      <Text style={[styles.iconText, {color: '#59b54b'}]}>♥</Text>
+                    </View>
+                    <Text style={styles.graphTitleBlue}>PULSE RATE</Text>
+                    <View style={{flex: 1}} />
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.infoRow}>
+                    <View style={{flex: 1}}>
+                      <Text style={styles.smallMuted}>Latest</Text>
+                      <Text style={styles.smallMuted}>
+                        {displayData[0] ? new Date(displayData[0].startTs).toLocaleTimeString() : '—'}
+                      </Text>
+                      <Text style={styles.goalText}>Your goal: 60-100 bpm</Text>
+                    </View>
+                    <Text style={styles.bigReadingRight}>
+                      {displayData[0] ? `${displayData[0].avgPR}` : '—'}{' '}
+                      <Text style={styles.bpm}>bpm</Text>
+                    </Text>
+                  </View>
+
+                  {chartData.length > 0 ? (
+                    <PulseChart
+                      width={SCREEN_WIDTH - 20}
+                      data={chartData}
+                      xLabels={xLabels}
+                    />
+                  ) : (
+                    <View style={styles.noChartData}>
+                      <Text style={styles.noChartDataText}>Not enough data to show chart</Text>
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
             </View>
           )}
         </View>
       )}
-    </SafeAreaView>
+    </View>
+  );
+}
+
+// Oxygen Chart Component
+function OxygenChart({width, data, xLabels}) {
+  const padding = {left: 10, right: 48, top: 18, bottom: 26};
+  const w = width - 2;
+  const h = SCREEN_HEIGHT * 0.22;
+  const chartW = w - padding.left - padding.right;
+  const chartH = h - padding.top - padding.bottom;
+
+  const Y_MIN = 80;
+  const Y_MAX = 100;
+  const bracketLabels = [100, 95, 90, 85, 80];
+
+  if (!data || data.length < 2) {
+    return (
+      <Svg width={w} height={h}>
+        <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+        <SvgText
+          x={w / 2}
+          y={h / 2}
+          fontSize="12"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          Not enough data to show chart
+        </SvgText>
+      </Svg>
+    );
+  }
+
+  const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
+  const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
+
+  const avgPoints = data.map((d, i) => `${xFor(i)},${yFor(d.avgSpO2)}`).join(' ');
+  const todayX = xFor(data.length - 1);
+  const todayY = yFor(data[data.length - 1].avgSpO2);
+
+  return (
+    <Svg width={w} height={h}>
+      <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+
+      {[0.25, 0.5, 0.75].map(p => (
+        <Line
+          key={`grid-${p}`}
+          x1={padding.left}
+          x2={padding.left + chartW}
+          y1={padding.top + chartH * p}
+          y2={padding.top + chartH * p}
+          stroke="#e9ecef"
+          strokeWidth="1"
+        />
+      ))}
+
+      {/* Goal line at 95% */}
+      <Line
+        x1={padding.left}
+        x2={padding.left + chartW}
+        y1={yFor(95)}
+        y2={yFor(95)}
+        stroke="#7acb6a"
+        strokeWidth="1.5"
+      />
+
+      <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="1.5" />
+
+      {data.map((d, i) => (
+        <Circle
+          key={`oxy-dot-${i}`}
+          cx={xFor(i)}
+          cy={yFor(d.avgSpO2)}
+          r="4"
+          fill="#ffffff"
+          stroke={BRAND}
+          strokeWidth="1.5"
+        />
+      ))}
+
+      {/* right rail + marker */}
+      <Line
+        x1={padding.left + chartW + 10}
+        x2={padding.left + chartW + 10}
+        y1={padding.top}
+        y2={padding.top + chartH}
+        stroke="#7aa9c9"
+        strokeWidth="2"
+      />
+      <Circle
+        cx={padding.left + chartW + 10}
+        cy={todayY}
+        r="6"
+        stroke="#0d6ea5"
+        strokeWidth="2"
+        fill="#ffffff"
+      />
+
+      {/* right-side tick labels */}
+      {bracketLabels.map(val => (
+        <React.Fragment key={`oxy-br-${val}`}>
+          <Line
+            x1={padding.left + chartW + 6}
+            x2={padding.left + chartW + 14}
+            y1={yFor(val)}
+            y2={yFor(val)}
+            stroke="#7aa9c9"
+            strokeWidth="2"
+          />
+          <SvgText
+            x={padding.left + chartW + 18}
+            y={yFor(val) + 4}
+            fill="#7a7a7a"
+            fontSize="10">
+            {val}
+          </SvgText>
+        </React.Fragment>
+      ))}
+
+      {/* vertical today cursor */}
+      <Line
+        x1={todayX}
+        x2={todayX}
+        y1={padding.top}
+        y2={padding.top + chartH}
+        stroke="#9ec6dd"
+        strokeWidth="2"
+      />
+
+      {/* X labels */}
+      {xLabels.map((lab, i) => (
+        <SvgText
+          key={`x-oxy-${lab}-${i}`}
+          x={xFor(i)}
+          y={padding.top + chartH + 18}
+          fontSize="10"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          {lab}
+        </SvgText>
+      ))}
+    </Svg>
+  );
+}
+
+// Pulse Chart Component
+function PulseChart({width, data, xLabels}) {
+  const padding = {left: 10, right: 48, top: 18, bottom: 26};
+  const w = width - 2;
+  const h = SCREEN_HEIGHT * 0.22;
+  const chartW = w - padding.left - padding.right;
+  const chartH = h - padding.top - padding.bottom;
+
+  const Y_MIN = 50;
+  const Y_MAX = 120;
+  const bracketLabels = [120, 100, 80, 60, 50];
+
+  if (!data || data.length < 2) {
+    return (
+      <Svg width={w} height={h}>
+        <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+        <SvgText
+          x={w / 2}
+          y={h / 2}
+          fontSize="12"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          Not enough data to show chart
+        </SvgText>
+      </Svg>
+    );
+  }
+
+  const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
+  const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
+
+  const avgPoints = data.map((d, i) => `${xFor(i)},${yFor(d.avgPR)}`).join(' ');
+  const todayX = xFor(data.length - 1);
+  const todayY = yFor(data[data.length - 1].avgPR);
+
+  return (
+    <Svg width={w} height={h}>
+      <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+
+      {[0.25, 0.5, 0.75].map(p => (
+        <Line
+          key={`grid-pulse-${p}`}
+          x1={padding.left}
+          x2={padding.left + chartW}
+          y1={padding.top + chartH * p}
+          y2={padding.top + chartH * p}
+          stroke="#e9ecef"
+          strokeWidth="1"
+        />
+      ))}
+
+      {/* Normal range lines */}
+      <Line
+        x1={padding.left}
+        x2={padding.left + chartW}
+        y1={yFor(100)}
+        y2={yFor(100)}
+        stroke="#ffa43b"
+        strokeWidth="1.5"
+      />
+      <Line
+        x1={padding.left}
+        x2={padding.left + chartW}
+        y1={yFor(60)}
+        y2={yFor(60)}
+        stroke="#7acb6a"
+        strokeWidth="1.5"
+      />
+
+      <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="1.5" />
+
+      {data.map((d, i) => (
+        <Circle
+          key={`pulse-dot-${i}`}
+          cx={xFor(i)}
+          cy={yFor(d.avgPR)}
+          r="4"
+          fill="#ffffff"
+          stroke={BRAND}
+          strokeWidth="1.5"
+        />
+      ))}
+
+      {/* right rail + marker */}
+      <Line
+        x1={padding.left + chartW + 10}
+        x2={padding.left + chartW + 10}
+        y1={padding.top}
+        y2={padding.top + chartH}
+        stroke="#7aa9c9"
+        strokeWidth="2"
+      />
+      <Circle
+        cx={padding.left + chartW + 10}
+        cy={todayY}
+        r="6"
+        stroke="#0d6ea5"
+        strokeWidth="2"
+        fill="#ffffff"
+      />
+
+      {/* right-side tick labels */}
+      {bracketLabels.map(val => (
+        <React.Fragment key={`pulse-br-${val}`}>
+          <Line
+            x1={padding.left + chartW + 6}
+            x2={padding.left + chartW + 14}
+            y1={yFor(val)}
+            y2={yFor(val)}
+            stroke="#7aa9c9"
+            strokeWidth="2"
+          />
+          <SvgText
+            x={padding.left + chartW + 18}
+            y={yFor(val) + 4}
+            fill="#7a7a7a"
+            fontSize="10">
+            {val}
+          </SvgText>
+        </React.Fragment>
+      ))}
+
+      {/* vertical today cursor */}
+      <Line
+        x1={todayX}
+        x2={todayX}
+        y1={padding.top}
+        y2={padding.top + chartH}
+        stroke="#9ec6dd"
+        strokeWidth="2"
+      />
+
+      {/* X labels */}
+      {xLabels.map((lab, i) => (
+        <SvgText
+          key={`x-pulse-${lab}-${i}`}
+          x={xFor(i)}
+          y={padding.top + chartH + 18}
+          fontSize="10"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          {lab}
+        </SvgText>
+      ))}
+    </Svg>
   );
 }
 
@@ -327,12 +802,32 @@ function SessionCard({ item }) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#FFFFFF' },
-
-  // Header (colored bar)
-  header: { paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 0 },
-  headerTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '800' },
-  headerSub: { color: '#EAF2FF', marginTop: 4 },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
+  
+  // Header styles matching BloodPressure.js
+  header: {
+    width: '100%',
+    height: SCREEN_HEIGHT * 0.08,
+    backgroundColor: BRAND,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingTop: 10,
+  },
+  backIcon: {
+    width: SCREEN_WIDTH * 0.06,
+    height: SCREEN_WIDTH * 0.06,
+    resizeMode: 'contain',
+    tintColor: '#fff',
+  },
+  headerTitle: {
+    color: 'white',
+    fontSize: SCREEN_WIDTH * 0.05,
+    fontWeight: 'bold',
+    flex: 1,
+    textAlign: 'center',
+    marginRight: SCREEN_WIDTH * 0.08,
+  },
 
   // Section title (black text)
   sectionTitle: { color: '#111827', fontSize: 16, fontWeight: '700', marginTop: 12, marginBottom: 8, paddingHorizontal: 12 },
@@ -361,27 +856,183 @@ const styles = StyleSheet.create({
   batteryPill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#FFFFFF', borderWidth: 1 },
   batteryText: { color: '#374151', fontWeight: '700' },
 
-  // Metric big cards
-  bigCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 12, marginBottom: 12,
-    borderWidth: 1, borderColor: '#E5E7EB'
+  // Parallel cards container
+  parallelCards: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    marginBottom: 12,
+    paddingHorizontal: 12
   },
-  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  cardTitle: { color: '#111827', fontSize: 16, fontWeight: '800' },
-  piPill: { color: '#374151', backgroundColor: '#FFFFFF', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
 
-  valueRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 6, marginTop: 4, marginBottom: 6 },
-  bigValue: { fontSize: 34, fontWeight: '900' }, // color set inline with BRAND
+  // Small cards for Oxygen Level and Pulse Rate
+  smallCard: {
+    backgroundColor: '#FFFFFF', 
+    borderRadius: 16, 
+    padding: 12, 
+    borderWidth: 1, 
+    borderColor: '#E5E7EB',
+    width: '48%',
+    alignItems: 'center'
+  },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  cardTitle: { color: '#111827', fontSize: 16, fontWeight: '800', textAlign: 'center' },
+
+  valueRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', marginTop: 4, marginBottom: 6 },
+  bigValue: { fontSize: 34, fontWeight: '900' },
   bigUnit: { color: '#6B7280', fontSize: 18, marginLeft: 4, marginBottom: 2 },
 
-  axisRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 6, marginTop: 6 },
-  axisText: { color: '#9CA3AF', fontSize: 11 },
+  // PI row
+  piRow: { marginTop: 4 },
+  piText: { color: '#374151', backgroundColor: '#FFFFFF', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, fontSize: 12 },
 
   // PPG card
-  graphCard: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center' },
+  graphCard: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', marginHorizontal: 12, marginBottom: 12 },
+
+  // Tab Container (from BloodPressure.js)
+  tabContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    backgroundColor: BRAND,
+    paddingVertical: SCREEN_HEIGHT * 0.01,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  activeTab: {
+    borderBottomWidth: 3,
+    borderBottomColor: '#fff',
+  },
+  tabText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  activeTabText: {
+    color: '#fff',
+  },
+
+  // Scroll views
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 10,
+  },
+  graphScrollContent: {
+    padding: 10,
+  },
+
+  // Section header
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    backgroundColor: '#f8f9fa',
+    marginBottom: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: BRAND,
+  },
+  sectionHeaderText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+
+  // Graph styles (from BloodPressure.js)
+  graphHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+  },
+  graphTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  iconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  iconText: {
+    fontSize: 16,
+    color: '#fff',
+  },
+  graphTitleBlue: {
+    color: '#2c80ff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#eee',
+    marginVertical: 10,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 15,
+    paddingHorizontal: 15,
+  },
+  smallMuted: {
+    color: '#666',
+    fontSize: 12,
+  },
+  goalText: {
+    color: '#2c80ff',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  bigReading: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  bigReadingRight: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#333',
+    textAlign: 'right',
+  },
+  percent: {
+    fontSize: 14,
+    fontWeight: 'normal',
+    color: '#666',
+  },
+  bpm: {
+    fontSize: 14,
+    fontWeight: 'normal',
+    color: '#666',
+  },
+  noChartData: {
+    height: SCREEN_HEIGHT * 0.22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  noChartDataText: {
+    color: '#7a7a7a',
+    fontSize: 12,
+  },
 
   // Session cards
-  sessionCard: { marginTop: 12, borderRadius: 12, padding: 12, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB' },
+  sessionCard: { 
+    marginTop: 12, 
+    borderRadius: 12, 
+    padding: 12, 
+    backgroundColor: '#FFFFFF', 
+    borderWidth: 1, 
+    borderColor: '#E5E7EB',
+    marginHorizontal: 12
+  },
   sessionTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
   sessionSub: { color: '#6B7280', marginTop: 4 },
   rowWrap: { flexDirection: 'row', flexWrap: 'wrap' },

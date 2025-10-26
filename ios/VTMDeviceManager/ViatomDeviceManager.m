@@ -4,9 +4,15 @@
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <React/RCTEventEmitter.h>
 #import <React/RCTLog.h>
+#import <AVFoundation/AVFoundation.h>
 
 static NSString * const kViatomCentralRestoreId = @"com.rpmapp.viatom.central.restore";
 static const NSTimeInterval kScanRestartDelay = 0.35;
+
+// Persist keys
+static NSString * const kSavedPeripheralUUIDKey = @"rpm.viatom.savedPeripheralUUID";
+static NSString * const kAutoReconnectEnabledKey = @"rpm.viatom.autoReconnectEnabled";
+static NSString * const kVoiceEnabledKey         = @"rpm.viatom.voiceEnabled";
 
 @interface ViatomURATUtilsSingleton : VTMURATUtils <CBPeripheralDelegate>
 + (instancetype)sharedInstance;
@@ -52,6 +58,11 @@ static const NSTimeInterval kScanRestartDelay = 0.35;
 // scan options toggle to be a bit more aggressive right after disconnect
 @property (nonatomic, assign) BOOL inRecoveryRescan;
 
+// ---- NEW: Auto-reconnect & Voice ----
+@property (nonatomic, assign) BOOL autoReconnectEnabled;
+@property (nonatomic, assign) BOOL voiceEnabled;
+@property (nonatomic, strong) AVSpeechSynthesizer *tts;
+
 @end
 
 @implementation ViatomDeviceManager
@@ -92,6 +103,17 @@ RCT_EXPORT_MODULE();
     _viatomUtils.deviceDelegate = self;
 
     _inRecoveryRescan = NO;
+
+    // ---- NEW: Load persisted settings ----
+    NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+    _autoReconnectEnabled = [ud objectForKey:kAutoReconnectEnabledKey] ? [ud boolForKey:kAutoReconnectEnabledKey] : YES; // default ON after first connect
+    _voiceEnabled         = [ud objectForKey:kVoiceEnabledKey] ? [ud boolForKey:kVoiceEnabledKey] : YES;                 // default ON
+    _tts = [[AVSpeechSynthesizer alloc] init];
+    [self configureAudioSessionIfNeeded];
+    NSString *saved = [ud stringForKey:kSavedPeripheralUUIDKey];
+    if (saved.length) {
+      _lastConnectedId = [[NSUUID alloc] initWithUUIDString:saved];
+    }
   }
   return self;
 }
@@ -103,7 +125,52 @@ RCT_EXPORT_MODULE();
   [self.lastResultWaitTimer invalidate];
 }
 
-#pragma mark - Byte helpers
+#pragma mark - NEW helpers (persist + voice)
+
+- (void)persistLastConnectedId:(NSUUID *)uuid {
+  if (!uuid) return;
+  self.lastConnectedId = uuid;
+  [[NSUserDefaults standardUserDefaults] setObject:uuid.UUIDString forKey:kSavedPeripheralUUIDKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)persistAutoReconnect:(BOOL)enabled {
+  self.autoReconnectEnabled = enabled;
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kAutoReconnectEnabledKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)persistVoiceEnabled:(BOOL)enabled {
+  self.voiceEnabled = enabled;
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kVoiceEnabledKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)forgetSavedPeripheral {
+  self.lastConnectedId = nil;
+  [[NSUserDefaults standardUserDefaults] removeObjectForKey:kSavedPeripheralUUIDKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)configureAudioSessionIfNeeded {
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  NSError *err = nil;
+  [session setCategory:AVAudioSessionCategoryAmbient
+           withOptions:AVAudioSessionCategoryOptionDuckOthers
+                 error:&err];
+  [session setActive:YES error:&err];
+}
+
+- (void)speak:(NSString *)phrase {
+  if (!self.voiceEnabled || phrase.length == 0) return;
+  AVSpeechUtterance *utt = [AVSpeechUtterance speechUtteranceWithString:phrase];
+  utt.rate = AVSpeechUtteranceDefaultSpeechRate;
+  utt.pitchMultiplier = 1.0;
+  utt.volume = 1.0;
+  [self.tts speakUtterance:utt];
+}
+
+#pragma mark - Byte helpers (unchanged)
 
 static inline double vt_normalize_pressure(short raw) {
   int absval = (raw >= 0 ? raw : -raw);
@@ -198,6 +265,9 @@ static BOOL vt_try_extract_result(NSData *blob,
       [self sendEventWithName:@"onDeviceConnected"
                          body:@{@"name": p.name ?: @"Unknown",
                                 @"id": p.identifier.UUIDString}];
+
+      // NEW: speak on restore
+      [self speak:@"Device connected"];
     }
   }
 }
@@ -223,6 +293,7 @@ static BOOL vt_try_extract_result(NSData *blob,
   NSDictionary *opts = @{ CBCentralManagerScanOptionAllowDuplicatesKey: @NO };
   [self.centralManager scanForPeripheralsWithServices:nil options:opts];
 
+  // Try to surface the last device visually as discovered (if CoreBluetooth can retrieve it)
   if (self.lastConnectedId) {
     NSArray<CBPeripheral*> *retrieved = [self.centralManager retrievePeripheralsWithIdentifiers:@[self.lastConnectedId]];
     for (CBPeripheral *p in retrieved) {
@@ -234,6 +305,11 @@ static BOOL vt_try_extract_result(NSData *blob,
                            body:@{@"name": p.name ?: @"Unknown",
                                   @"id": p.identifier.UUIDString,
                                   @"rssi": @0}];
+      }
+      // NEW: auto-connect if enabled and not already connected
+      if (self.autoReconnectEnabled &&
+          p.state == CBPeripheralStateDisconnected) {
+        [self.centralManager connectPeripheral:p options:nil];
       }
     }
   }
@@ -278,12 +354,20 @@ static BOOL vt_try_extract_result(NSData *blob,
   } else {
     self.peripheralsById[peripheral.identifier] = peripheral;
   }
+
+  // ---- NEW: If this is our saved device and auto-reconnect is ON, connect immediately
+  if (self.autoReconnectEnabled &&
+      self.lastConnectedId &&
+      [peripheral.identifier isEqual:self.lastConnectedId] &&
+      peripheral.state == CBPeripheralStateDisconnected) {
+    [self.centralManager connectPeripheral:peripheral options:nil];
+  }
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   [self.centralManager stopScan];
   self.connectedPeripheral = peripheral;
-  self.lastConnectedId = peripheral.identifier;
+  [self persistLastConnectedId:peripheral.identifier]; // persist for future auto-reconnect
 
   peripheral.delegate = self.viatomUtils;
   self.viatomUtils.peripheral = peripheral;
@@ -296,6 +380,9 @@ static BOOL vt_try_extract_result(NSData *blob,
   [self sendEventWithName:@"onDeviceConnected"
                      body:@{@"name": peripheral.name ?: @"Unknown",
                             @"id": peripheral.identifier.UUIDString}];
+
+  // NEW: Voice prompt
+  [self speak:@"Device connected"];
 }
 
 - (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
@@ -315,6 +402,9 @@ static BOOL vt_try_extract_result(NSData *blob,
                      body:@{@"name": peripheral.name ?: @"Unknown",
                             @"id": peripheral.identifier.UUIDString,
                             @"error": error ? error.localizedDescription : @"Normal disconnection"}];
+
+  // NEW: Voice prompt for out-of-range or manual disconnect
+  [self speak:@"Device disconnected"];
 
   [self exitBPMode];
   [self.measurementTimeoutTimer invalidate];
@@ -336,6 +426,7 @@ static BOOL vt_try_extract_result(NSData *blob,
 
   self.connectedPeripheral = nil;
 
+  // Kick aggressive rescan; beginScanRecovery will fall back to normal scan
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kScanRestartDelay * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
     [self beginScanRecovery];
@@ -594,7 +685,7 @@ commandCompletion:(u_char)cmdType
   if (self.isBPModeActive) {
     [self.viatomUtils requestChangeBPState:2]; // to History; exits BP mode safely
     self.isBPModeActive = NO;
-    [self stopStatusPoller];
+    [self stopStatusPoller];                  // ✅ fixed
     [self stopRealDataPuller];
     [self.lastResultWaitTimer invalidate];
     self.lastResultWaitTimer = nil;
@@ -637,8 +728,8 @@ commandCompletion:(u_char)cmdType
                                    userInfo:nil
                                     repeats:NO];
 
-  [self sendEventWithName:@"onBPModeChanged" body:@{@"active": @YES}];
-  [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_started"}];
+  [self sendEventWithName:@"onBPModeChanged" body:@{@"active": @YES}]; // ✅ fixed
+  [self sendEventWithName:@"onBPStatusChanged" body:@{@"status": @"measurement_started"}]; // ✅ fixed
 }
 
 #pragma mark - RN Exports
@@ -664,7 +755,8 @@ RCT_EXPORT_METHOD(connectToDevice:(NSString *)deviceId) {
     }
   }
   if (target) {
-    self.lastConnectedId = uuid;
+    [self persistLastConnectedId:uuid];              // remember after manual connect
+    [self persistAutoReconnect:YES];                 // enable auto-reconnect from now on
     [self.centralManager connectPeripheral:target options:nil];
   } else {
     [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Device not found", @"deviceId": deviceId}];
@@ -702,7 +794,7 @@ RCT_EXPORT_METHOD(startBPMeasurement) {
   }
   if (!self.isDeployed) {
     self.pendingStart = YES;
-    [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Waiting for device to finish setup…"}];
+    [self sendEventWithName:@"onDeviceError" body:@{@"error": @"Waiting for device to finish setup…"}]; // ✅ fixed
     return;
   }
   [self _startBPAfterReady];
@@ -763,6 +855,19 @@ RCT_EXPORT_METHOD(enterHistoryMode) {
     [self.viatomUtils requestChangeBPState:2];
     self.isBPModeActive = NO;
   }
+}
+
+// ---- NEW: Runtime toggles from JS ----
+RCT_EXPORT_METHOD(enableAutoReconnect:(BOOL)enabled) {
+  [self persistAutoReconnect:enabled];
+}
+
+RCT_EXPORT_METHOD(forgetSavedDevice) {
+  [self forgetSavedPeripheral];
+}
+
+RCT_EXPORT_METHOD(setVoiceEnabled:(BOOL)enabled) {
+  [self persistVoiceEnabled:enabled];
 }
 
 @end

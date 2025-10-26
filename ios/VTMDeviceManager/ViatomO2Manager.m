@@ -1,7 +1,5 @@
 // ViatomO2Manager.m
-// React Native bridge for Viatom O2 SDK (VTO2Lib)
-// Uses the legacy realtime APIs per VTO2Lib README.
-// Auto-enables VTParamTypeOxiSwitch=1, starts realtime, and retries if needed.
+// React Native bridge for Viatom O2 SDK (VTO2Lib) with Auto-Reconnect + optional Voice Prompts
 
 #import "ViatomO2Manager.h"
 
@@ -9,12 +7,20 @@
 #import <React/RCTBridge.h>
 #import <React/RCTUtils.h>
 #import <CoreBluetooth/CoreBluetooth.h>
+#import <AVFoundation/AVFoundation.h>
 
 #import <VTO2Lib/VTO2Communicate.h>
 #import <VTO2Lib/VTO2Parser.h>
 #import <VTO2Lib/VTO2Def.h>
 #import <VTO2Lib/VTRealObject.h>
 #import <VTO2Lib/VTO2Info.h>
+
+// ---- NEW: persistence keys & scan timing
+static NSString * const kO2CentralRestoreId       = @"com.rpmapp.viatom.o2.central.restore";
+static NSString * const kO2SavedPeripheralUUIDKey = @"rpm.viatom.o2.savedPeripheralUUID";
+static NSString * const kO2AutoReconnectEnabledKey= @"rpm.viatom.o2.autoReconnectEnabled";
+static NSString * const kO2VoiceEnabledKey        = @"rpm.viatom.o2.voiceEnabled";
+static const NSTimeInterval kO2ScanRestartDelay   = 0.35;
 
 @interface ViatomO2Manager () <CBCentralManagerDelegate, VTO2CommunicateDelegate>
 
@@ -36,6 +42,13 @@
 // Filters
 @property (nonatomic, strong) NSArray<NSString *> *namePrefixes;
 
+// ---- NEW: Auto-reconnect & Voice
+@property (nonatomic, strong) NSUUID *lastConnectedId;
+@property (nonatomic, assign) BOOL autoReconnectEnabled;
+@property (nonatomic, assign) BOOL voiceEnabled;
+@property (nonatomic, strong) AVSpeechSynthesizer *tts;
+@property (nonatomic, assign) BOOL inRecoveryRescan;
+
 @end
 
 @implementation ViatomO2Manager
@@ -45,8 +58,13 @@ RCT_EXPORT_MODULE(ViatomO2Manager);
 
 - (instancetype)init {
   if ((self = [super init])) {
-    _central = [[CBCentralManager alloc] initWithDelegate:self queue:dispatch_get_main_queue()
-                                                 options:@{ CBCentralManagerOptionShowPowerAlertKey:@YES }];
+    NSDictionary *opts = @{
+      CBCentralManagerOptionShowPowerAlertKey: @YES,
+      CBCentralManagerOptionRestoreIdentifierKey: kO2CentralRestoreId
+    };
+    _central = [[CBCentralManager alloc] initWithDelegate:self
+                                                    queue:dispatch_get_main_queue()
+                                                  options:opts];
     _found = [NSMutableArray array];
     _servicesReady = NO;
     _streaming = NO;
@@ -54,10 +72,24 @@ RCT_EXPORT_MODULE(ViatomO2Manager);
     _lastFrameTS = 0;
     _namePrefixes = @[@"outfit-wps", @"oxyfit-wps", @"Oxyfit", @"O2", @"O2M", @"O2Ring",
                       @"Checkme", @"Viatom", @"PC-60", @"PC-68"];
-    RCTLogInfo(@"[O2] init manager");
+    _inRecoveryRescan = NO;
+
+    // ---- NEW: load persisted settings
+    NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+    _autoReconnectEnabled = [ud objectForKey:kO2AutoReconnectEnabledKey] ? [ud boolForKey:kO2AutoReconnectEnabledKey] : YES;
+    _voiceEnabled         = [ud objectForKey:kO2VoiceEnabledKey]         ? [ud boolForKey:kO2VoiceEnabledKey]         : YES;
+    NSString *saved = [ud stringForKey:kO2SavedPeripheralUUIDKey];
+    if (saved.length) _lastConnectedId = [[NSUUID alloc] initWithUUIDString:saved];
+
+    _tts = [[AVSpeechSynthesizer alloc] init];
+    [self configureAudioSessionIfNeeded];
+
+    RCTLogInfo(@"[O2] init manager (autoReconnect=%d voice=%d)", (int)_autoReconnectEnabled, (int)_voiceEnabled);
   }
   return self;
 }
+
+#pragma mark - Events
 
 - (NSArray<NSString *> *)supportedEvents {
   return @[
@@ -81,7 +113,98 @@ RCT_EXPORT_MODULE(ViatomO2Manager);
   });
 }
 
-#pragma mark - Scan
+#pragma mark - NEW: persistence + voice
+
+- (void)persistLastConnectedId:(NSUUID *)uuid {
+  if (!uuid) return;
+  self.lastConnectedId = uuid;
+  [[NSUserDefaults standardUserDefaults] setObject:uuid.UUIDString forKey:kO2SavedPeripheralUUIDKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)persistAutoReconnect:(BOOL)enabled {
+  self.autoReconnectEnabled = enabled;
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kO2AutoReconnectEnabledKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)persistVoiceEnabled:(BOOL)enabled {
+  self.voiceEnabled = enabled;
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kO2VoiceEnabledKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)forgetSavedPeripheral {
+  self.lastConnectedId = nil;
+  [[NSUserDefaults standardUserDefaults] removeObjectForKey:kO2SavedPeripheralUUIDKey];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)configureAudioSessionIfNeeded {
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  NSError *err = nil;
+  [session setCategory:AVAudioSessionCategoryAmbient
+           withOptions:AVAudioSessionCategoryOptionDuckOthers
+                 error:&err];
+  [session setActive:YES error:&err];
+}
+
+- (void)speak:(NSString *)phrase {
+  if (!self.voiceEnabled || phrase.length == 0) return;
+  AVSpeechUtterance *utt = [AVSpeechUtterance speechUtteranceWithString:phrase];
+  utt.rate = AVSpeechUtteranceDefaultSpeechRate;
+  utt.pitchMultiplier = 1.0;
+  utt.volume = 1.0;
+  [self.tts speakUtterance:utt];
+}
+
+#pragma mark - Scan helpers (normal vs recovery)
+
+- (void)beginScanNormal {
+  [self.central stopScan];
+  [self.found removeAllObjects];
+
+  NSDictionary *opts = @{ CBCentralManagerScanOptionAllowDuplicatesKey: @NO };
+  [self.central scanForPeripheralsWithServices:nil options:opts];
+
+  // If we have a saved device, surface it & optionally connect
+  if (self.lastConnectedId) {
+    NSArray<CBPeripheral*> *retrieved = [self.central retrievePeripheralsWithIdentifiers:@[self.lastConnectedId]];
+    for (CBPeripheral *p in retrieved) {
+      if (p) {
+        // emit as discovered
+        NSString *name = p.name ?: @"Unknown";
+        [self emit:@"onO2DeviceDiscovered"
+              body:@{@"name": name, @"id": p.identifier.UUIDString ?: @"", @"rssi": @0}];
+
+        if (self.autoReconnectEnabled && p.state == CBPeripheralStateDisconnected) {
+          RCTLogInfo(@"[O2] auto-connect (retrieved) to %@", name);
+          [self.central connectPeripheral:p options:@{
+            CBConnectPeripheralOptionNotifyOnConnectionKey:@YES,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey:@YES
+          }];
+        }
+      }
+    }
+  }
+}
+
+- (void)beginScanRecovery {
+  self.inRecoveryRescan = YES;
+  [self.central stopScan];
+  [self.found removeAllObjects];
+
+  NSDictionary *opts = @{ CBCentralManagerScanOptionAllowDuplicatesKey: @YES };
+  [self.central scanForPeripheralsWithServices:nil options:opts];
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    self.inRecoveryRescan = NO;
+    [self beginScanNormal];
+  });
+}
+
+#pragma mark - RN API (Scan)
 
 RCT_EXPORT_METHOD(startO2Scan) {
   RCTLogInfo(@"[O2] startO2Scan (CB state=%ld)", (long)self.central.state);
@@ -89,9 +212,7 @@ RCT_EXPORT_METHOD(startO2Scan) {
     [self emit:@"onO2Error" body:@{@"error": @"Bluetooth not available", @"state": @(self.central.state)}];
     return;
   }
-  [self.found removeAllObjects];
-  [self.central scanForPeripheralsWithServices:nil
-                                       options:@{ CBCentralManagerScanOptionAllowDuplicatesKey:@NO }];
+  [self beginScanNormal];
 }
 
 RCT_EXPORT_METHOD(stopO2Scan) {
@@ -99,7 +220,7 @@ RCT_EXPORT_METHOD(stopO2Scan) {
   [self.central stopScan];
 }
 
-#pragma mark - Connect / Disconnect
+#pragma mark - RN API (Connect / Disconnect)
 
 RCT_EXPORT_METHOD(connectO2:(NSString *)deviceId) {
   RCTLogInfo(@"[O2] connectO2: %@", deviceId);
@@ -109,8 +230,14 @@ RCT_EXPORT_METHOD(connectO2:(NSString *)deviceId) {
   }
   NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:deviceId ?: @""];
   CBPeripheral *target = nil;
-  for (CBPeripheral *p in self.found) {
-    if ([p.identifier isEqual:uuid]) { target = p; break; }
+
+  // 1) try already discovered
+  for (CBPeripheral *p in self.found) { if ([p.identifier isEqual:uuid]) { target = p; break; } }
+
+  // 2) try retrieved
+  if (!target) {
+    NSArray<CBPeripheral*> *retrieved = [self.central retrievePeripheralsWithIdentifiers:@[uuid]];
+    target = retrieved.firstObject;
   }
   if (!target) {
     [self emit:@"onO2Error" body:@{@"error": @"Device not found", @"deviceId": deviceId ?: @""}];
@@ -123,6 +250,10 @@ RCT_EXPORT_METHOD(connectO2:(NSString *)deviceId) {
   self.streaming = NO;
   self.warmValidFrames = 0;
   self.lastFrameTS = 0;
+
+  // Remember device & enable auto-reconnect from now on
+  [self persistLastConnectedId:uuid];
+  [self persistAutoReconnect:YES];
 
   [self.central connectPeripheral:target options:@{
     CBConnectPeripheralOptionNotifyOnConnectionKey:@YES,
@@ -139,6 +270,11 @@ RCT_EXPORT_METHOD(disconnectO2) {
     [self.central cancelPeripheralConnection:self.connected];
     self.connected = nil;
     self.servicesReady = NO;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kO2ScanRestartDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      [self beginScanNormal];
+    });
   }
 }
 
@@ -146,8 +282,34 @@ RCT_EXPORT_METHOD(disconnectO2) {
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
   RCTLogInfo(@"[O2] centralManagerDidUpdateState: %ld", (long)central.state);
-  if (central.state != CBManagerStatePoweredOn) {
+  if (central.state == CBManagerStatePoweredOn) {
+    // optional: auto resume scanning
+    [self beginScanNormal];
+  } else {
     [self emit:@"onO2Error" body:@{@"error": @"Bluetooth not available", @"state": @(central.state)}];
+  }
+}
+
+- (void)centralManager:(CBCentralManager *)central
+   willRestoreState:(NSDictionary<NSString *,id> *)dict {
+  NSArray *restored = dict[CBCentralManagerRestoredStatePeripheralsKey];
+  for (CBPeripheral *p in restored) {
+    if (p.state == CBPeripheralStateConnected || p.state == CBPeripheralStateConnecting) {
+      self.connected = p;
+
+      // Hand BLE to SDK
+      VTO2Communicate *comm = [VTO2Communicate sharedInstance];
+      p.delegate = comm;
+      comm.peripheral = p;
+      comm.delegate = self;
+
+      // Ensure service discovery continues
+      [p discoverServices:nil];
+
+      // Emit + speak
+      [self emit:@"onO2DeviceConnected" body:@{@"name": p.name ?: @"Unknown", @"id": p.identifier.UUIDString ?: @""}];
+      [self speak:@"Device connected"];
+    }
   }
 }
 
@@ -165,19 +327,34 @@ RCT_EXPORT_METHOD(disconnectO2) {
   }
   if (!match) return;
 
-  for (CBPeripheral *p in self.found) {
-    if ([p.identifier isEqual:peripheral.identifier]) return;
-  }
+  // prevent duplicates
+  for (CBPeripheral *p in self.found) { if ([p.identifier isEqual:peripheral.identifier]) return; }
 
   [self.found addObject:peripheral];
   RCTLogInfo(@"[O2] discovered: %@  rssi=%@", name, RSSI);
   [self emit:@"onO2DeviceDiscovered"
         body:@{@"name": name, @"id": peripheral.identifier.UUIDString ?: @"", @"rssi": RSSI ?: @0}];
+
+  // ---- NEW: auto-connect on sight if matches saved UUID
+  if (self.autoReconnectEnabled &&
+      self.lastConnectedId &&
+      [peripheral.identifier isEqual:self.lastConnectedId] &&
+      peripheral.state == CBPeripheralStateDisconnected) {
+    RCTLogInfo(@"[O2] auto-connect (discovered) to %@", name);
+    [self.central stopScan];
+    [self.central connectPeripheral:peripheral options:@{
+      CBConnectPeripheralOptionNotifyOnConnectionKey:@YES,
+      CBConnectPeripheralOptionNotifyOnDisconnectionKey:@YES
+    }];
+  }
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   RCTLogInfo(@"[O2] didConnectPeripheral: %@", peripheral.name);
   self.connected = peripheral;
+
+  // Remember device for future auto-connect
+  [self persistLastConnectedId:peripheral.identifier];
 
   // Hand BLE to SDK (required by README)
   VTO2Communicate *comm = [VTO2Communicate sharedInstance];
@@ -191,6 +368,9 @@ RCT_EXPORT_METHOD(disconnectO2) {
   [self emit:@"onO2DeviceConnected"
         body:@{@"name": peripheral.name ?: @"Unknown",
                @"id": peripheral.identifier.UUIDString ?: @""}];
+
+  // NEW: voice
+  [self speak:@"Device connected"];
 }
 
 - (void)centralManager:(CBCentralManager *)central
@@ -202,6 +382,11 @@ RCT_EXPORT_METHOD(disconnectO2) {
         body:@{@"error": @"Failed to connect",
                @"deviceId": peripheral.identifier.UUIDString ?: @"",
                @"message": error.localizedDescription ?: @"Unknown"}];
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kO2ScanRestartDelay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [self beginScanNormal];
+  });
 }
 
 - (void)centralManager:(CBCentralManager *)central
@@ -214,6 +399,8 @@ RCT_EXPORT_METHOD(disconnectO2) {
                @"id": peripheral.identifier.UUIDString ?: @"",
                @"error": error ? error.localizedDescription : @"Normal disconnection"}];
 
+  [self speak:@"Device disconnected"];
+
   if (self.connected == peripheral) self.connected = nil;
   self.streaming = NO;
   self.servicesReady = NO;
@@ -221,9 +408,15 @@ RCT_EXPORT_METHOD(disconnectO2) {
   [self stopKickTimer];
 
   [VTO2Communicate sharedInstance].delegate = nil;
+
+  // Aggressive rescan → normal scan
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kO2ScanRestartDelay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [self beginScanRecovery];
+  });
 }
 
-#pragma mark - Auto start realtime once services are ready
+#pragma mark - Auto start realtime once services are ready (unchanged)
 
 - (void)startStreamsIfPossible {
   if (!self.connected || !self.servicesReady || self.streaming) return;
@@ -236,9 +429,8 @@ RCT_EXPORT_METHOD(disconnectO2) {
   VTO2Communicate *comm = [VTO2Communicate sharedInstance];
 
   // 1) Enable measurement (critical for WPS/Outfit firmwares)
-  //    VTParamTypeOxiSwitch: 0-off, 1-on (per README)
   @try {
-    [comm beginToParamType:VTParamTypeOxiSwitch content:@"1"]; // turn on measuring
+    [comm beginToParamType:VTParamTypeOxiSwitch content:@"1"];
     RCTLogInfo(@"[O2] set param: VTParamTypeOxiSwitch=1");
   } @catch (__unused NSException *e) {
     RCTLogInfo(@"[O2] set param: OxiSwitch write threw (ignored)");
@@ -302,7 +494,7 @@ RCT_EXPORT_METHOD(disconnectO2) {
   self.lastFrameTS = now;
 }
 
-#pragma mark - VTO2CommunicateDelegate
+#pragma mark - VTO2CommunicateDelegate (unchanged)
 
 - (void)serviceDeployed:(BOOL)completed {
   RCTLogInfo(@"[O2] serviceDeployed=%d", completed);
@@ -383,7 +575,6 @@ RCT_EXPORT_METHOD(disconnectO2) {
 
   self.lastFrameTS = [NSDate date].timeIntervalSince1970;
 
-  // Some firmware send only wave; parse and forward as PPG samples (ints)
   id waveObj = [VTO2Parser parseO2RealWaveWithData:realWave];
   NSArray *points = [waveObj respondsToSelector:@selector(points)] ? [waveObj valueForKey:@"points"] : @[];
   if (points.count) {
@@ -423,6 +614,20 @@ RCT_EXPORT_METHOD(disconnectO2) {
 
 - (void)updatePeripheralRSSI:(NSNumber *)RSSI {
   RCTLogInfo(@"[O2] RSSI update: %@", RSSI);
+}
+
+#pragma mark - RN Exports: toggles (match BP manager API style)
+
+RCT_EXPORT_METHOD(enableO2AutoReconnect:(BOOL)enabled) {
+  [self persistAutoReconnect:enabled];
+}
+
+RCT_EXPORT_METHOD(forgetO2SavedDevice) {
+  [self forgetSavedPeripheral];
+}
+
+RCT_EXPORT_METHOD(setO2VoiceEnabled:(BOOL)enabled) {
+  [self persistVoiceEnabled:enabled];
 }
 
 @end

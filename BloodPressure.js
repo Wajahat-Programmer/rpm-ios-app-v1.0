@@ -431,6 +431,7 @@ export default function BloodPressure({ navigation }) {
   const [filterDays, setFilterDays] = useState(7);
   const [refreshing, setRefreshing] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
+  const [shouldAutoReconnect, setShouldAutoReconnect] = useState(true);
   // const connectedDeviceRef = useRef(null);
 
   const connectedDeviceRef = useRef({
@@ -439,6 +440,26 @@ export default function BloodPressure({ navigation }) {
   batteryLevel: null
 });
 
+// Add this method to force reconnection to the last device
+const attemptAutoReconnect = useCallback(() => {
+  console.log('[BP] Manual reconnection attempt');
+  setShouldAutoReconnect(true);
+  
+  // First try the native auto-reconnect
+  ViatomDeviceManager.enableAutoReconnect?.(true);
+  
+  // Then start scanning
+  safeStartScan();
+  
+  // If we have previously discovered devices, try connecting to the first BP device
+  if (devices.length > 0) {
+    const bpDevice = devices.find(d => d.name && d.name.includes('BP2A'));
+    if (bpDevice && !connectedDevice) {
+      console.log('[BP] Attempting connection to previously discovered device:', bpDevice.name);
+      setTimeout(() => connectToDevice(bpDevice.id), 500);
+    }
+  }
+}, [devices, connectedDevice, safeStartScan]);
   const showToastMessage = (message, duration = 2000) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage(message);
@@ -543,23 +564,44 @@ useEffect(() => {
     // Load initial historical data
     loadHistoricalData(7);
 
-    const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
-      console.log('[BLE] Discovered:', device);
-      setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
-    });
+const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
+  console.log('[BLE] Discovered:', device);
+  
+  // If this looks like our BP device and we're trying to auto-reconnect, attempt connection
+  if (shouldAutoReconnect && device.name && device.name.includes('BP2A')) {
+    console.log('[BP] Auto-reconnect: Found BP device, attempting connection');
+    // Small delay to avoid connection storms
+    setTimeout(() => {
+      if (!connectedDevice) {
+        connectToDevice(device.id);
+      }
+    }, 1000);
+  }
+  
+  setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
+});
 
 const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
   console.log('[BLE] Connected:', device);
-  setConnectedDevice(device);
-  // Store device info in ref with battery
-  connectedDeviceRef.current = {
-    name: device.name,
+  
+  // Ensure device info is properly set
+  const deviceInfo = {
+    name: device.name || 'BP2A 2943', // Fallback name from discovery
     id: device.id,
-    batteryLevel: batteryLevel // Initialize with current battery level
+    batteryLevel: batteryLevel
   };
-  console.log('💾 Stored device in ref with battery:', connectedDeviceRef.current);
+  
+  setConnectedDevice(deviceInfo);
+  
+  // Store device info in ref with battery
+  connectedDeviceRef.current = deviceInfo;
+  console.log('💾 Stored device in ref:', connectedDeviceRef.current);
+  
   ViatomDeviceManager.requestDeviceInfo?.();
   ViatomDeviceManager.requestBPConfig?.();
+  
+  // Stop scanning once connected
+  ViatomDeviceManager.stopScan?.();
 });
 
 const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
@@ -674,19 +716,68 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
   }, []);
 
   // ----- Screen focus: scan if not connected -----
-  useFocusEffect(
-    useCallback(() => {
+// Add this useEffect to handle the auto-reconnect logic more aggressively
+useEffect(() => {
+  // When we have historical data loaded but no device connected, force reconnection
+  if (historicalData.length > 0 && !connectedDevice && shouldAutoReconnect) {
+    console.log('[BP] Historical data loaded but no device - forcing reconnection attempt');
+    // Give a small delay to allow any ongoing native auto-reconnect to complete
+    const reconnectTimer = setTimeout(() => {
       if (!connectedDevice) {
-        // Clear list for fresh session and start a scan
-        setDevices([]);
+        console.log('[BP] Force starting scan for reconnection');
         safeStartScan();
+        
+        // Enable more aggressive scanning for reconnection
+        ViatomDeviceManager.enableAutoReconnect?.(true);
       }
-      return () => {
-        // optional: stop scan when leaving screen (native may still be connected)
-        ViatomDeviceManager.stopScan?.();
-      };
-    }, [connectedDevice, safeStartScan])
-  );
+    }, 2000);
+    
+    return () => clearTimeout(reconnectTimer);
+  }
+}, [historicalData, connectedDevice, shouldAutoReconnect]);
+
+// Update the useFocusEffect to be more aggressive about reconnection
+useFocusEffect(
+  useCallback(() => {
+    console.log('[BP] Screen focused, checking connection state');
+    
+    // Always enable auto-reconnect when coming to this screen
+    setShouldAutoReconnect(true);
+    ViatomDeviceManager.enableAutoReconnect?.(true);
+    
+    if (!connectedDevice) {
+      console.log('[BP] No connected device, starting aggressive scan');
+      // Don't clear devices - keep previous discoveries
+      safeStartScan();
+      
+      // Set a longer timeout for reconnection scenarios
+      const scanTimeout = setTimeout(() => {
+        if (!connectedDevice) {
+          console.log('[BP] Extended scan complete, stopping');
+          ViatomDeviceManager.stopScan?.();
+        }
+      }, 15000); // 15 seconds for reconnection
+      
+      return () => clearTimeout(scanTimeout);
+    } else {
+      console.log('[BP] Device already connected:', connectedDevice.name);
+    }
+    
+    return () => {
+      console.log('[BP] Screen unfocused - keeping background connection');
+      // Don't stop scanning completely, allow background reconnection
+    };
+  }, [connectedDevice, safeStartScan])
+);
+
+// Add this useEffect to handle connection state changes
+useEffect(() => {
+  // When device disconnects, enable auto-reconnect for next focus
+  if (!connectedDevice) {
+    setShouldAutoReconnect(true);
+  }
+}, [connectedDevice]);
+
 
 const handleRealTimeData = (data) => {
   if (!data || !data.type) return;
@@ -794,20 +885,20 @@ if (data.type === 'BP') {
     ViatomDeviceManager.stopScan?.();
   };
 
-  const connectToDevice = (deviceId) => {
-    console.log('[BLE] Connect to:', deviceId);
-    ViatomDeviceManager.connectToDevice?.(deviceId);
-  };
+const connectToDevice = (deviceId) => {
+  console.log('[BLE] Connect to:', deviceId);
+  setShouldAutoReconnect(true); // Enable auto-reconnect when user manually connects
+  ViatomDeviceManager.connectToDevice?.(deviceId);
+};
 
-  const disconnectDevice = () => {
-    console.log('[BLE] Disconnect');
-    ViatomDeviceManager.disconnectDevice?.();
-    setConnectedDevice(null);
-    setRealTimeData(null);
-    setIsMeasuring(false);
-    // Let native recovery scan run; also nudge a normal scan
-    setTimeout(() => safeStartScan(), 600);
-  };
+const disconnectDevice = () => {
+  console.log('[BLE] Disconnect - disabling auto-reconnect');
+  setShouldAutoReconnect(false); // User manually disconnected, don't auto-reconnect
+  ViatomDeviceManager.disconnectDevice?.();
+  setConnectedDevice(null);
+  setRealTimeData(null);
+  setIsMeasuring(false);
+};
 
   const startMeasurement = () => {
     if (!connectedDevice) {
@@ -922,7 +1013,11 @@ if (data.type === 'BP') {
                           onPress={() => connectToDevice(d.id)}
                         >
                           <View style={styles.deviceIcon}>
-                            <Text style={styles.deviceIconText}>💓</Text>
+                            <Image 
+                              source={require('./assets/device_bp.png')} 
+                              style={styles.deviceIconImage}
+                              resizeMode="contain"
+                            />
                           </View>
                           <View style={styles.deviceInfo}>
                             <Text style={styles.deviceName}>{d.name ?? 'Unknown Device'}</Text>
@@ -967,45 +1062,31 @@ if (data.type === 'BP') {
   );
 
   // ----- Header connection status row -----
-  const renderConnectionStatus = () => (
-    <View style={styles.connectionStatus}>
-      <View style={styles.statusSection}>
-        <View
-          style={[
-            styles.statusIndicator,
-            { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' },
-          ]}
-        />
-        <Text style={styles.statusText}>
+
+const renderConnectionStatus = () => (
+  <View style={styles.deviceRow}>
+    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <Image
+        source={require('./assets/device_bp.png')} // Use your BP device image
+        style={[styles.deviceImage, { borderColor: globalStyles.primaryColor.color }]}
+        resizeMode="contain"
+      />
+      
+      <View>
+        <Text style={styles.deviceName}>{connectedDevice?.name || 'Blood Pressure Monitor'}</Text>
+        <Text style={[styles.connectedText, { color: globalStyles.primaryColor.color }]}>
           {connectedDevice ? 'Connected' : 'Disconnected'}
         </Text>
       </View>
-
-      {batteryLevel !== null && (
-        <View style={styles.batterySection}>
-          <Text style={styles.batteryText}>🔋 {batteryLevel}%</Text>
-        </View>
-      )}
-
-      <View style={styles.connectSection}>
-        <TouchableOpacity
-          style={[styles.connectButtonSmall, !connectedDevice && styles.connectButtonActive]}
-          onPress={() => {
-            if (connectedDevice) {
-              // Behave like a real disconnect pill when connected
-              disconnectDevice();
-            } else {
-              setDevices([]); // fresh list
-              setShowDeviceModal(true); // modal will auto-start scan on show
-            }
-          }}>
-          <Text style={styles.connectButtonTextSmall}>
-            {connectedDevice ? 'Disconnect' : 'Connect'}
-          </Text>
-        </TouchableOpacity>
-      </View>
     </View>
-  );
+    
+    {batteryLevel !== null && (
+      <View style={[styles.batteryPill, { borderColor: '#E5E7EB' }]}>
+        <Text style={styles.batteryText}>{batteryLevel}%</Text>
+      </View>
+    )}
+  </View>
+);
 
   const renderDeviceControls = () => (
     <View style={styles.controlsContainer}>
@@ -1354,6 +1435,44 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginRight: SCREEN_WIDTH * 0.08,
   },
+
+  deviceRow: {
+  backgroundColor: '#FFFFFF', 
+  borderRadius: 16, 
+  borderWidth: 1, 
+  borderColor: '#E5E7EB',
+  padding: 12, 
+  marginBottom: 12, 
+  flexDirection: 'row', 
+  alignItems: 'center', 
+  justifyContent: 'space-between',
+  marginHorizontal: 12,
+  marginTop: 12,
+},
+deviceImage: {
+  width: 42,
+  height: 28,
+  borderRadius: 8,
+  backgroundColor: '#FFFFFF',
+  borderWidth: 1,
+  marginRight: 10,
+},
+deviceName: { 
+  color: '#111827', 
+  fontSize: 16, 
+  fontWeight: '700' 
+},
+connectedText: { 
+  fontSize: 12, 
+  marginTop: 2 
+},
+batteryPill: { 
+  paddingHorizontal: 10, 
+  paddingVertical: 6, 
+  borderRadius: 999, 
+  backgroundColor: '#FFFFFF', 
+  borderWidth: 1 
+},
   connectionStatus: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1393,11 +1512,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#333',
   },
-  batteryText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
+batteryText: { 
+  color: '#374151', 
+  fontWeight: '700' 
+},
   connectButtonSmall: {
     backgroundColor: '#f0f0f0',
     paddingHorizontal: 16,
@@ -1558,18 +1676,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
-  deviceIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f0f0f0',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  deviceIconText: {
-    fontSize: 18,
-  },
+deviceIcon: {
+  width: 40,
+  height: 40,
+  borderRadius: 20,
+  backgroundColor: '#f0f0f0',
+  justifyContent: 'center',
+  alignItems: 'center',
+  marginRight: 12,
+  overflow: 'hidden',
+},
+deviceIconImage: {
+  width: 24,
+  height: 24,
+},
   deviceInfo: {
     flex: 1,
   },
