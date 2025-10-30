@@ -267,7 +267,7 @@ static BOOL vt_try_extract_result(NSData *blob,
                                 @"id": p.identifier.UUIDString}];
 
       // NEW: speak on restore
-      [self speak:@"Device connected"];
+      // [self speak:@"Device connected"];
     }
   }
 }
@@ -404,7 +404,18 @@ static BOOL vt_try_extract_result(NSData *blob,
                             @"error": error ? error.localizedDescription : @"Normal disconnection"}];
 
   // NEW: Voice prompt for out-of-range or manual disconnect
-  [self speak:@"Device disconnected"];
+  // Speak only once per actual disconnection event
+static BOOL hasSpokenDisconnect = NO;
+if (!hasSpokenDisconnect) {
+    [self speak:@"Device disconnected"];
+    hasSpokenDisconnect = YES;
+}
+
+// Reset flag when reconnection happens
+dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    hasSpokenDisconnect = NO;
+});
+
 
   [self exitBPMode];
   [self.measurementTimeoutTimer invalidate];

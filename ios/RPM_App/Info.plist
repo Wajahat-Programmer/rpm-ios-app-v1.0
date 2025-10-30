@@ -42,6 +42,8 @@
 			<string>TLSv1.1</string>
 		</dict>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to quickly and securely access your account</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>RCTNewArchEnabled</key>
@@ -64,8 +66,5 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-
-	<key>NSFaceIDUsageDescription</key>
-	<string>Use Face ID to quickly and securely access your account</string>
 </dict>
 </plist>

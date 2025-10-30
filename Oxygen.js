@@ -15,9 +15,12 @@ import {
   RefreshControl,
   ActivityIndicator
 } from 'react-native';
-import Svg, { Polyline, Line, Rect } from 'react-native-svg';
+import { Svg, Polyline, Line, Rect, Text as SvgText, Circle, G } from 'react-native-svg';
+
 import O2 from './ViatomO2Manager';
 import globalStyles from './globalStyles';
+import axios from 'axios';
+import SQLite from 'react-native-sqlite-storage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const BRAND = (globalStyles?.primaryColor?.color) || '#3b82f6'; // fallback if not defined
@@ -61,23 +64,127 @@ export default function Oxygen({ navigation }) {
   const [activeTab, setActiveTab] = useState('LIST');
   const [refreshing, setRefreshing] = useState(false);
 
-  const finalizeSessionIfAny = () => {
-    const s = sessionRef.current;
-    const hasPayload = (s.spo2.length || s.pr.length || s.ppgCount);
-    if (s.startTs && hasPayload) {
-      const card = {
-        id: nextCardId.current++,
-        startTs: s.startTs,
-        endTs: s.endTs || s.startTs,
-        avgSpO2: safeAvg(s.spo2), minSpO2: safeMin(s.spo2), maxSpO2: safeMax(s.spo2),
-        avgPR:   safeAvg(s.pr),   minPR:   safeMin(s.pr),   maxPR:   safeMax(s.pr),
-        ppgCount: s.ppgCount,
-      };
-      setSessionCards((prev) => [card, ...prev]);
-    }
-    sessionRef.current = { startTs: null, endTs: null, spo2: [], pr: [], ppgCount: 0 };
-    searchingSinceRef.current = null;
-  };
+  const API_BASE_URL = 'https://rmtrpm.duckdns.org/rpm-be/api/dev-data';
+const DEV_TYPE = 'spo2';
+
+const storeDeviceData = async (deviceData) => {
+  try {
+    await axios.post(`${API_BASE_URL}/devices/data`, deviceData, {
+      withCredentials: true,
+      headers: {'Content-Type': 'application/json'}
+    });
+  } catch (error) {
+    console.error('Error storing device data:', error);
+  }
+};
+
+// ─────────────────────────────────────────────
+// SQLite setup
+// ─────────────────────────────────────────────
+const db = SQLite.openDatabase(
+  { name: 'oxygen_sessions.db', location: 'default' },
+  () => console.log('✅ SQLite DB opened'),
+  (err) => console.error('❌ SQLite error:', err)
+);
+
+const initDB = () => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        startTs INTEGER,
+        endTs INTEGER,
+        avgSpO2 REAL,
+        minSpO2 REAL,
+        maxSpO2 REAL,
+        avgPR REAL,
+        minPR REAL,
+        maxPR REAL,
+        ppgCount INTEGER
+      );`
+    );
+  });
+};
+useEffect(() => {
+  initDB();
+  // Load existing sessions on mount
+  db.transaction(tx => {
+    tx.executeSql(
+      'SELECT * FROM sessions ORDER BY id DESC',
+      [],
+      (_, { rows }) => {
+        const existing = [];
+        for (let i = 0; i < rows.length; i++) existing.push(rows.item(i));
+        setSessionCards(existing);
+        nextCardId.current = existing.length + 1;
+      }
+    );
+  });
+}, []);
+
+
+const finalizeSessionIfAny = () => {
+  const s = sessionRef.current;
+  const hasPayload = (s.spo2.length || s.pr.length || s.ppgCount);
+  if (s.startTs && hasPayload) {
+    const card = {
+      id: nextCardId.current++,
+      startTs: s.startTs,
+      endTs: s.endTs || s.startTs,
+      avgSpO2: safeAvg(s.spo2), minSpO2: safeMin(s.spo2), maxSpO2: safeMax(s.spo2),
+      avgPR:   safeAvg(s.pr),   minPR:   safeMin(s.pr),   maxPR:   safeMax(s.pr),
+      ppgCount: s.ppgCount,
+    };
+    setSessionCards((prev) => [card, ...prev]);
+
+    // Save to local SQLite
+db.transaction(tx => {
+  tx.executeSql(
+    `INSERT INTO sessions (startTs, endTs, avgSpO2, minSpO2, maxSpO2, avgPR, minPR, maxPR, ppgCount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      card.startTs,
+      card.endTs,
+      card.avgSpO2,
+      card.minSpO2,
+      card.maxSpO2,
+      card.avgPR,
+      card.minPR,
+      card.maxPR,
+      card.ppgCount
+    ],
+    () => console.log('✅ Session stored in SQLite'),
+    (_, err) => console.error('❌ Insert error:', err)
+  );
+});
+
+
+    // ✅ API INTEGRATION: Store session data to backend
+    const deviceData = {
+      devId: connected?.id || 'spo2_device_001',
+      devType: DEV_TYPE,
+      data: {
+        spo2: card.avgSpO2,
+        pulse: card.avgPR,
+        pi: pi, // Current PI value
+        timestamp: new Date(card.startTs).toISOString(),
+        duration: card.endTs - card.startTs,
+        minSpo2: card.minSpO2,
+        maxSpo2: card.maxSpO2,
+        minPulse: card.minPR,
+        maxPulse: card.maxPR,
+        deviceInfo: {
+          name: connected?.name || 'Oxygen Monitor',
+          batteryLevel: battery,
+          type: 'viatom'
+        }
+      }
+    };
+    storeDeviceData(deviceData);
+  }
+  sessionRef.current = { startTs: null, endTs: null, spo2: [], pr: [], ppgCount: 0 };
+  searchingSinceRef.current = null;
+};
 
   useEffect(() => {
     const subs = [
@@ -210,24 +317,46 @@ export default function Oxygen({ navigation }) {
   // Refresh function for pull-to-refresh
   const onRefresh = async () => {
     setRefreshing(true);
-    // Simulate data refresh
-    setTimeout(() => {
-      setRefreshing(false);
-    }, 1000);
+    // Reload sessions from database
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT * FROM sessions ORDER BY id DESC',
+        [],
+        (_, { rows }) => {
+          const existing = [];
+          for (let i = 0; i < rows.length; i++) existing.push(rows.item(i));
+          setSessionCards(existing);
+          setRefreshing(false);
+        }
+      );
+    });
   };
 
   // Helper function to generate X labels for charts
   const generateXLabels = (data) => {
-    if (!data || data.length === 0) return ['No Data'];
-    const dates = data.map(item => {
+    if (!data || data.length === 0) return [];
+    
+    return data.map((item, index) => {
       const date = new Date(item.startTs);
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      
+      // For few data points, show time. For many, show date
+      if (data.length <= 5) {
+        return date.toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+      } else {
+        // Show abbreviated date
+        return date.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        });
+      }
     });
-    const uniqueDates = [...new Set(dates)].slice(-7);
-    return uniqueDates;
   };
 
-  // Get display data sorted by timestamp
+  // Get display data sorted by timestamp (newest first)
   const getDisplayData = () => {
     return [...sessionCards].sort((a, b) => {
       const dateA = new Date(a.startTs);
@@ -236,28 +365,23 @@ export default function Oxygen({ navigation }) {
     });
   };
 
-  // Prepare chart data
+  // Prepare chart data (oldest first for chronological charts)
   const displayData = getDisplayData();
-  const chartData = [...sessionCards].sort((a, b) => {
-    const dateA = new Date(a.startTs);
-    const dateB = new Date(b.startTs);
-    return dateA - dateB;
-  });
+  const chartData = [...sessionCards]
+    .filter(item => item.avgSpO2 != null && item.avgPR != null && !isNaN(item.avgSpO2) && !isNaN(item.avgPR))
+    .sort((a, b) => {
+      const dateA = new Date(a.startTs);
+      const dateB = new Date(b.startTs);
+      return dateA - dateB;
+    });
   const xLabels = generateXLabels(chartData);
 
-  return (
-    <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={{ backgroundColor: BRAND }}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation?.goBack?.()}>
-            <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Oxygen</Text>
-        </View>
-      </SafeAreaView>
+  // Validate if we have enough data for charts
+  const hasEnoughChartData = chartData.length >= 2;
 
-      {/* Content below header */}
-      {!connected ? (
+  const renderContent = () => {
+    if (!connected) {
+      return (
         <>
           <Text style={styles.sectionTitle}>Nearby Devices</Text>
           <FlatList
@@ -267,14 +391,164 @@ export default function Oxygen({ navigation }) {
             contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 16 }}
             ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
           />
-          {sessionCards.length > 0 && (
-            <View style={{ paddingHorizontal: 12, paddingBottom: 24 }}>
-              <Text style={styles.sectionTitle}>Previous Sessions</Text>
-              {sessionCards.map((it) => <SessionCard key={it.id} item={it} />)}
+          
+          {/* Tab Container for Disconnected State */}
+          <View style={styles.tabContainer}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'LIST' && styles.activeTab]}
+              onPress={() => setActiveTab('LIST')}>
+              <Text style={[styles.tabText, activeTab === 'LIST' && styles.activeTabText]}>
+                LIST
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'GRAPH' && styles.activeTab]}
+              onPress={() => setActiveTab('GRAPH')}>
+              <Text style={[styles.tabText, activeTab === 'GRAPH' && styles.activeTabText]}>
+                GRAPH
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Content based on active tab */}
+          {activeTab === 'LIST' ? (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[BRAND]}
+                />
+              }>
+              {sessionCards.length > 0 && (
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionHeaderText}>
+                    All Sessions ({sessionCards.length})
+                  </Text>
+                </View>
+              )}
+
+              {sessionCards.length === 0 ? (
+                <View style={{padding: 20, alignItems: 'center'}}>
+                  <Text style={{color: '#666'}}>No oxygen readings yet.</Text>
+                </View>
+              ) : (
+                <>
+                  {displayData.map(item => (
+                    <SessionCard key={item.id} item={item} />
+                  ))}
+                </>
+              )}
+            </ScrollView>
+          ) : (
+            <View style={{flex: 1}}>
+              <ScrollView
+                contentContainerStyle={styles.graphScrollContent}
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    colors={[BRAND]}
+                  />
+                }>
+                <View style={styles.graphHeader}>
+                  <Text style={styles.graphTitle}>Oxygen Trends</Text>
+                </View>
+
+                <View style={styles.graphCard}>
+                  <View style={styles.graphHeader}>
+                    <View style={[styles.iconCircle, {backgroundColor: BRAND}]}>
+                      <Text style={styles.iconText}>O₂</Text>
+                    </View>
+                    <Text style={styles.graphTitleBlue}>OXYGEN LEVEL</Text>
+                    <View style={{flex: 1}} />
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.infoRow}>
+                    <View style={{flex: 1}}>
+                      <Text style={styles.smallMuted}>Latest</Text>
+                      <Text style={styles.smallMuted}>
+                        {displayData[0] ? new Date(displayData[0].startTs).toLocaleTimeString() : '—'}
+                      </Text>
+                      <Text style={styles.goalText}>
+                        Your goal: 95% or higher
+                      </Text>
+                    </View>
+                    <Text style={styles.bigReading}>
+                      {displayData[0]
+                        ? `${displayData[0].avgSpO2}`
+                        : '—'}{' '}
+                      <Text style={styles.percent}>%</Text>
+                    </Text>
+                  </View>
+
+                  {hasEnoughChartData ? (
+                    <OxygenChart
+                      width={SCREEN_WIDTH - 20}
+                      data={chartData}
+                      xLabels={xLabels}
+                    />
+                  ) : (
+                    <View style={styles.noChartData}>
+                      <Text style={styles.noChartDataText}>
+                        {chartData.length === 0 ? "No data" : "Need 2+ readings for chart"}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.graphCard}>
+                  <View style={styles.graphHeader}>
+                    <View style={[styles.iconCircle, {backgroundColor: '#cfecc5'}]}>
+                      <Text style={[styles.iconText, {color: '#59b54b'}]}>♥</Text>
+                    </View>
+                    <Text style={styles.graphTitleBlue}>PULSE RATE</Text>
+                    <View style={{flex: 1}} />
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.infoRow}>
+                    <View style={{flex: 1}}>
+                      <Text style={styles.smallMuted}>Latest</Text>
+                      <Text style={styles.smallMuted}>
+                        {displayData[0] ? new Date(displayData[0].startTs).toLocaleTimeString() : '—'}
+                      </Text>
+                      <Text style={styles.goalText}>Your goal: 60-100 bpm</Text>
+                    </View>
+                    <Text style={styles.bigReadingRight}>
+                      {displayData[0] ? `${displayData[0].avgPR}` : '—'}{' '}
+                      <Text style={styles.bpm}>bpm</Text>
+                    </Text>
+                  </View>
+
+                  {hasEnoughChartData ? (
+                    <PulseChart
+                      width={SCREEN_WIDTH - 20}
+                      data={chartData}
+                      xLabels={xLabels}
+                    />
+                  ) : (
+                    <View style={styles.noChartData}>
+                      <Text style={styles.noChartDataText}>
+                        {chartData.length === 0 ? "No data" : "Need 2+ readings for chart"}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
             </View>
           )}
         </>
-      ) : (
+      );
+    } else {
+      return (
         <View style={{ flex: 1 }}>
           {/* Device status row */}
           <View style={styles.deviceRow}>
@@ -430,7 +704,7 @@ export default function Oxygen({ navigation }) {
                     </Text>
                   </View>
 
-                  {chartData.length > 0 ? (
+                  {hasEnoughChartData ? (
                     <OxygenChart
                       width={SCREEN_WIDTH - 20}
                       data={chartData}
@@ -438,7 +712,9 @@ export default function Oxygen({ navigation }) {
                     />
                   ) : (
                     <View style={styles.noChartData}>
-                      <Text style={styles.noChartDataText}>Not enough data to show chart</Text>
+                      <Text style={styles.noChartDataText}>
+                        {chartData.length === 0 ? "No data" : "Need 2+ readings for chart"}
+                      </Text>
                     </View>
                   )}
                 </View>
@@ -468,7 +744,7 @@ export default function Oxygen({ navigation }) {
                     </Text>
                   </View>
 
-                  {chartData.length > 0 ? (
+                  {hasEnoughChartData ? (
                     <PulseChart
                       width={SCREEN_WIDTH - 20}
                       data={chartData}
@@ -476,7 +752,9 @@ export default function Oxygen({ navigation }) {
                     />
                   ) : (
                     <View style={styles.noChartData}>
-                      <Text style={styles.noChartDataText}>Not enough data to show chart</Text>
+                      <Text style={styles.noChartDataText}>
+                        {chartData.length === 0 ? "No data" : "Need 2+ readings for chart"}
+                      </Text>
                     </View>
                   )}
                 </View>
@@ -484,12 +762,28 @@ export default function Oxygen({ navigation }) {
             </View>
           )}
         </View>
-      )}
+      );
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: BRAND }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation?.goBack?.()}>
+            <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Oxygen</Text>
+        </View>
+      </SafeAreaView>
+
+      {/* Content below header */}
+      {renderContent()}
     </View>
   );
 }
 
-// Oxygen Chart Component
+// Fixed Oxygen Chart Component
 function OxygenChart({width, data, xLabels}) {
   const padding = {left: 10, right: 48, top: 18, bottom: 26};
   const w = width - 2;
@@ -517,17 +811,45 @@ function OxygenChart({width, data, xLabels}) {
     );
   }
 
-  const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
-  const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
+  // FIX: Handle single data point case
+  const xFor = i => {
+    if (data.length === 1) return padding.left + chartW / 2;
+    return padding.left + (chartW / (data.length - 1)) * i;
+  };
+  
+  const yFor = val => {
+    const normalized = Math.max(Y_MIN, Math.min(Y_MAX, val));
+    return padding.top + chartH - ((normalized - Y_MIN) / (Y_MAX - Y_MIN)) * chartH;
+  };
 
-  const avgPoints = data.map((d, i) => `${xFor(i)},${yFor(d.avgSpO2)}`).join(' ');
-  const todayX = xFor(data.length - 1);
-  const todayY = yFor(data[data.length - 1].avgSpO2);
+  // FIX: Filter out invalid data points
+  const validData = data.filter(d => d.avgSpO2 != null && !isNaN(d.avgSpO2));
+  
+  if (validData.length < 2) {
+    return (
+      <Svg width={w} height={h}>
+        <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+        <SvgText
+          x={w / 2}
+          y={h / 2}
+          fontSize="12"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          Not enough valid data points
+        </SvgText>
+      </Svg>
+    );
+  }
+
+  const avgPoints = validData.map((d, i) => `${xFor(i)},${yFor(d.avgSpO2)}`).join(' ');
+  const todayX = xFor(validData.length - 1);
+  const todayY = yFor(validData[validData.length - 1].avgSpO2);
 
   return (
     <Svg width={w} height={h}>
       <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
 
+      {/* Horizontal grid lines */}
       {[0.25, 0.5, 0.75].map(p => (
         <Line
           key={`grid-${p}`}
@@ -548,11 +870,16 @@ function OxygenChart({width, data, xLabels}) {
         y2={yFor(95)}
         stroke="#7acb6a"
         strokeWidth="1.5"
+        strokeDasharray="4,4"
       />
 
-      <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="1.5" />
+      {/* FIX: Only draw polyline if we have valid points */}
+      {avgPoints.split(' ').length >= 2 && (
+        <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="2" />
+      )}
 
-      {data.map((d, i) => (
+      {/* Data points */}
+      {validData.map((d, i) => (
         <Circle
           key={`oxy-dot-${i}`}
           cx={xFor(i)}
@@ -560,11 +887,11 @@ function OxygenChart({width, data, xLabels}) {
           r="4"
           fill="#ffffff"
           stroke={BRAND}
-          strokeWidth="1.5"
+          strokeWidth="2"
         />
       ))}
 
-      {/* right rail + marker */}
+      {/* Right rail + marker */}
       <Line
         x1={padding.left + chartW + 10}
         x2={padding.left + chartW + 10}
@@ -582,7 +909,7 @@ function OxygenChart({width, data, xLabels}) {
         fill="#ffffff"
       />
 
-      {/* right-side tick labels */}
+      {/* Right-side tick labels */}
       {bracketLabels.map(val => (
         <React.Fragment key={`oxy-br-${val}`}>
           <Line
@@ -603,33 +930,41 @@ function OxygenChart({width, data, xLabels}) {
         </React.Fragment>
       ))}
 
-      {/* vertical today cursor */}
-      <Line
-        x1={todayX}
-        x2={todayX}
-        y1={padding.top}
-        y2={padding.top + chartH}
-        stroke="#9ec6dd"
-        strokeWidth="2"
-      />
+      {/* Vertical today cursor */}
+      {validData.length > 1 && (
+        <Line
+          x1={todayX}
+          x2={todayX}
+          y1={padding.top}
+          y2={padding.top + chartH}
+          stroke="#9ec6dd"
+          strokeWidth="2"
+          strokeDasharray="3,3"
+        />
+      )}
 
-      {/* X labels */}
-      {xLabels.map((lab, i) => (
-        <SvgText
-          key={`x-oxy-${lab}-${i}`}
-          x={xFor(i)}
-          y={padding.top + chartH + 18}
-          fontSize="10"
-          fill="#7a7a7a"
-          textAnchor="middle">
-          {lab}
-        </SvgText>
-      ))}
+      {/* X labels - only show for actual data points */}
+      {validData.map((_, i) => {
+        if (i < xLabels.length) {
+          return (
+            <SvgText
+              key={`x-oxy-${i}`}
+              x={xFor(i)}
+              y={padding.top + chartH + 18}
+              fontSize="10"
+              fill="#7a7a7a"
+              textAnchor="middle">
+              {xLabels[i]}
+            </SvgText>
+          );
+        }
+        return null;
+      })}
     </Svg>
   );
 }
 
-// Pulse Chart Component
+// Fixed Pulse Chart Component
 function PulseChart({width, data, xLabels}) {
   const padding = {left: 10, right: 48, top: 18, bottom: 26};
   const w = width - 2;
@@ -657,17 +992,45 @@ function PulseChart({width, data, xLabels}) {
     );
   }
 
-  const xFor = i => padding.left + (chartW / (data.length - 1)) * i;
-  const yFor = val => padding.top + (Y_MAX - val) * (chartH / (Y_MAX - Y_MIN));
+  // FIX: Handle single data point case
+  const xFor = i => {
+    if (data.length === 1) return padding.left + chartW / 2;
+    return padding.left + (chartW / (data.length - 1)) * i;
+  };
+  
+  const yFor = val => {
+    const normalized = Math.max(Y_MIN, Math.min(Y_MAX, val));
+    return padding.top + chartH - ((normalized - Y_MIN) / (Y_MAX - Y_MIN)) * chartH;
+  };
 
-  const avgPoints = data.map((d, i) => `${xFor(i)},${yFor(d.avgPR)}`).join(' ');
-  const todayX = xFor(data.length - 1);
-  const todayY = yFor(data[data.length - 1].avgPR);
+  // FIX: Filter out invalid data points
+  const validData = data.filter(d => d.avgPR != null && !isNaN(d.avgPR));
+  
+  if (validData.length < 2) {
+    return (
+      <Svg width={w} height={h}>
+        <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
+        <SvgText
+          x={w / 2}
+          y={h / 2}
+          fontSize="12"
+          fill="#7a7a7a"
+          textAnchor="middle">
+          Not enough valid data points
+        </SvgText>
+      </Svg>
+    );
+  }
+
+  const avgPoints = validData.map((d, i) => `${xFor(i)},${yFor(d.avgPR)}`).join(' ');
+  const todayX = xFor(validData.length - 1);
+  const todayY = yFor(validData[validData.length - 1].avgPR);
 
   return (
     <Svg width={w} height={h}>
       <Rect x="0" y="0" width={w} height={h} fill="#ffffff" rx="6" />
 
+      {/* Horizontal grid lines */}
       {[0.25, 0.5, 0.75].map(p => (
         <Line
           key={`grid-pulse-${p}`}
@@ -698,9 +1061,13 @@ function PulseChart({width, data, xLabels}) {
         strokeWidth="1.5"
       />
 
-      <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="1.5" />
+      {/* FIX: Only draw polyline if we have valid points */}
+      {avgPoints.split(' ').length >= 2 && (
+        <Polyline points={avgPoints} fill="none" stroke={BRAND} strokeWidth="2" />
+      )}
 
-      {data.map((d, i) => (
+      {/* Data points */}
+      {validData.map((d, i) => (
         <Circle
           key={`pulse-dot-${i}`}
           cx={xFor(i)}
@@ -708,11 +1075,11 @@ function PulseChart({width, data, xLabels}) {
           r="4"
           fill="#ffffff"
           stroke={BRAND}
-          strokeWidth="1.5"
+          strokeWidth="2"
         />
       ))}
 
-      {/* right rail + marker */}
+      {/* Right rail + marker */}
       <Line
         x1={padding.left + chartW + 10}
         x2={padding.left + chartW + 10}
@@ -730,7 +1097,7 @@ function PulseChart({width, data, xLabels}) {
         fill="#ffffff"
       />
 
-      {/* right-side tick labels */}
+      {/* Right-side tick labels */}
       {bracketLabels.map(val => (
         <React.Fragment key={`pulse-br-${val}`}>
           <Line
@@ -751,28 +1118,36 @@ function PulseChart({width, data, xLabels}) {
         </React.Fragment>
       ))}
 
-      {/* vertical today cursor */}
-      <Line
-        x1={todayX}
-        x2={todayX}
-        y1={padding.top}
-        y2={padding.top + chartH}
-        stroke="#9ec6dd"
-        strokeWidth="2"
-      />
+      {/* Vertical today cursor */}
+      {validData.length > 1 && (
+        <Line
+          x1={todayX}
+          x2={todayX}
+          y1={padding.top}
+          y2={padding.top + chartH}
+          stroke="#9ec6dd"
+          strokeWidth="2"
+          strokeDasharray="3,3"
+        />
+      )}
 
-      {/* X labels */}
-      {xLabels.map((lab, i) => (
-        <SvgText
-          key={`x-pulse-${lab}-${i}`}
-          x={xFor(i)}
-          y={padding.top + chartH + 18}
-          fontSize="10"
-          fill="#7a7a7a"
-          textAnchor="middle">
-          {lab}
-        </SvgText>
-      ))}
+      {/* X labels - only show for actual data points */}
+      {validData.map((_, i) => {
+        if (i < xLabels.length) {
+          return (
+            <SvgText
+              key={`x-pulse-${i}`}
+              x={xFor(i)}
+              y={padding.top + chartH + 18}
+              fontSize="10"
+              fill="#7a7a7a"
+              textAnchor="middle">
+              {xLabels[i]}
+            </SvgText>
+          );
+        }
+        return null;
+      })}
     </Svg>
   );
 }

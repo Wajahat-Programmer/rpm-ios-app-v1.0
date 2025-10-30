@@ -498,6 +498,14 @@ const storeMeasurementData = async (reading) => {
     loadHistoricalData(filterDays);
   } catch (error) {
     console.error('❌ Failed to store device data:', error);
+
+        // Add this alert to inform user if data not sent to backend
+    Alert.alert(
+      'Data Upload Failed',
+      'Unable to send blood pressure data to the server. Please check your internet connection or try again later.',
+      [{ text: 'OK', style: 'default' }],
+      { cancelable: true }
+    );
   }
 };
 

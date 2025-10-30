@@ -81,10 +81,28 @@ export default function Home({ navigation }) {
         console.log('ℹ️ No BP data found');
         setBpData(null);
       }
-    } catch (error) {
-      console.error('❌ Error fetching latest BP data:', error);
-      setBpData(null);
-    } finally {
+    } 
+catch (error) {
+  console.error('❌ Error fetching latest BP data:', {
+    message: error.message,
+    code: error.code,
+    response: error.response?.status,
+    data: error.response?.data,
+  });
+
+  // Show alert for user
+  Alert.alert(
+    'Data Fetch Failed',
+    error.response
+      ? `Server returned ${error.response.status}: ${error.response.data?.message || 'Unexpected error'}`
+      : `Could not connect to server. Please check your internet connection or login session.`,
+    [{ text: 'OK', style: 'default' }],
+    { cancelable: true }
+  );
+
+  setBpData(null);
+}
+    finally {
       setIsLoading(false);
     }
   };
