@@ -12,8 +12,8 @@ export default {
   disconnectDevice: () => ViatomDeviceManager.disconnectDevice(),
 
   // Blood Pressure Methods
-  startBPMeasurement: () => ViatomDeviceManager.startBPMeasurement(),
-  stopBPMeasurement: () => ViatomDeviceManager.stopBPMeasurement(),
+  // startBPMeasurement: () => ViatomDeviceManager.startBPMeasurement(),
+  // stopBPMeasurement: () => ViatomDeviceManager.stopBPMeasurement(),
   requestBPConfig: () => ViatomDeviceManager.requestBPConfig(),
 
   // NOTE: native method is requestBPRunStatus (not requestBPRealStatus)

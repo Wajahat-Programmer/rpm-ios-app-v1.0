@@ -40,29 +40,48 @@ const getMarkerLeftPercent = systolic => {
 
 // API Configuration
 const API_BASE_URL = 'https://rmtrpm.duckdns.org/rpm-be/api/dev-data';
-const DEV_TYPE = 'bp'; // Blood Pressure device type
+const DEV_TYPE = 'bp';
 
-// Configure axios to include credentials (cookies)
+// Configure axios to include credentials
 axios.defaults.withCredentials = true;
 
 // Function to store device data
 const storeDeviceData = async (deviceData) => {
-  try {
-    const response = await axios.post(
-      `${API_BASE_URL}/devices/data`,
-      deviceData,
-      {
-        withCredentials: true,
-        headers: {
-          'Content-Type': 'application/json',
-        },
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`📡 [Attempt ${attempt}] Uploading BP data...`);
+      await new Promise(res => setTimeout(res, 500));
+
+      const response = await axios.post(
+        `${API_BASE_URL}/devices/data`,
+        deviceData,
+        {
+          withCredentials: true,
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000,
+        }
+      );
+
+      console.log('✅ Device data stored successfully');
+      return response.data;
+    } catch (error) {
+      const status = error.response?.status;
+      const msg = error.message;
+      console.warn(`❌ Upload attempt ${attempt} failed`, status || msg);
+
+      if (
+        attempt < MAX_RETRIES &&
+        (!status || status >= 500 || msg.includes('Network Error'))
+      ) {
+        await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
+        continue;
       }
-    );
-    console.log('✅ Device data stored successfully');
-    return response.data;
-  } catch (error) {
-    console.error('❌ Error storing device data:', error);
-    throw error;
+
+      throw error;
+    }
   }
 };
 
@@ -260,18 +279,14 @@ function BPMChart({width, data, xLabels}) {
   const chartW = w - padding.left - padding.right;
   const chartH = h - padding.top - padding.bottom;
 
-  // --- derive Y range from data (so 100/110 will show) ---
   const bpmVals = (data ?? []).map(d => Number(d.bpm)).filter(v => Number.isFinite(v));
-  // sensible fallbacks if no data
   const rawMin = bpmVals.length ? Math.min(...bpmVals) : 50;
   const rawMax = bpmVals.length ? Math.max(...bpmVals) : 90;
 
-  // add a little padding and clamp to practical bounds
   let Y_MIN = Math.max(40, Math.floor((rawMin - 5) / 5) * 5);
   let Y_MAX = Math.min(140, Math.ceil((rawMax + 5) / 5) * 5);
   if (Y_MAX - Y_MIN < 20) { Y_MIN = Math.max(40, Y_MIN - 5); Y_MAX = Math.min(140, Y_MAX + 5); }
 
-  // build tick labels every 10 bpm within range (top -> bottom)
   const bracketLabels = [];
   for (let v = Math.ceil(Y_MAX / 10) * 10; v >= Y_MIN; v -= 10) {
     bracketLabels.push(v);
@@ -316,7 +331,6 @@ function BPMChart({width, data, xLabels}) {
         />
       ))}
 
-      {/* goal line at 72, only if in visible range */}
       {72 >= Y_MIN && 72 <= Y_MAX && (
         <SvgLine
           x1={padding.left}
@@ -342,7 +356,6 @@ function BPMChart({width, data, xLabels}) {
         />
       ))}
 
-      {/* right rail + marker */}
       <SvgLine
         x1={padding.left + chartW + 10}
         x2={padding.left + chartW + 10}
@@ -360,7 +373,6 @@ function BPMChart({width, data, xLabels}) {
         fill="#ffffff"
       />
 
-      {/* right-side tick labels */}
       {bracketLabels.map(val => (
         <React.Fragment key={`bpm-br-${val}`}>
           <SvgLine
@@ -381,7 +393,6 @@ function BPMChart({width, data, xLabels}) {
         </React.Fragment>
       ))}
 
-      {/* vertical today cursor */}
       <SvgLine
         x1={todayX}
         x2={todayX}
@@ -391,7 +402,6 @@ function BPMChart({width, data, xLabels}) {
         strokeWidth="2"
       />
 
-      {/* X labels */}
       {xLabels.map((lab, i) => (
         <SvgText
           key={`x-bpm-${lab}-${i}`}
@@ -407,59 +417,44 @@ function BPMChart({width, data, xLabels}) {
   );
 }
 
-
 export default function BloodPressure({ navigation }) {
+  // State Management
   const [activeTab, setActiveTab] = useState('LIST');
   const [devices, setDevices] = useState([]);
   const [connectedDevice, setConnectedDevice] = useState(null);
-
   const [realTimeData, setRealTimeData] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
-  const [isMeasuring, setIsMeasuring] = useState(false);
+  
+  // Measurement State - Single source of truth
+  const [measurementState, setMeasurementState] = useState({
+    isMeasuring: false,
+    isDeviceInitiated: false,
+    hasError: false,
+    error: null
+  });
 
+  // UI State
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
-
-  const toastTimeoutRef = useRef(null);
-  const measurementTimeoutRef = useRef(null);
-  const scanGuardRef = useRef(false); // ← prevents duplicate scans
   const [batteryLevel, setBatteryLevel] = useState(null);
-
   const [historicalData, setHistoricalData] = useState([]);
   const [filterDays, setFilterDays] = useState(7);
   const [refreshing, setRefreshing] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
-  const [shouldAutoReconnect, setShouldAutoReconnect] = useState(true);
-  // const connectedDeviceRef = useRef(null);
+  const [deviceError, setDeviceError] = useState(null);
 
+  // Refs
+  const toastTimeoutRef = useRef(null);
+  const scanGuardRef = useRef(false);
   const connectedDeviceRef = useRef({
-  name: null,
-  id: null,
-  batteryLevel: null
-});
+    name: null,
+    id: null,
+    batteryLevel: null
+  });
 
-// Add this method to force reconnection to the last device
-const attemptAutoReconnect = useCallback(() => {
-  console.log('[BP] Manual reconnection attempt');
-  setShouldAutoReconnect(true);
-  
-  // First try the native auto-reconnect
-  ViatomDeviceManager.enableAutoReconnect?.(true);
-  
-  // Then start scanning
-  safeStartScan();
-  
-  // If we have previously discovered devices, try connecting to the first BP device
-  if (devices.length > 0) {
-    const bpDevice = devices.find(d => d.name && d.name.includes('BP2A'));
-    if (bpDevice && !connectedDevice) {
-      console.log('[BP] Attempting connection to previously discovered device:', bpDevice.name);
-      setTimeout(() => connectToDevice(bpDevice.id), 500);
-    }
-  }
-}, [devices, connectedDevice, safeStartScan]);
+  // Toast Management
   const showToastMessage = (message, duration = 2000) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage(message);
@@ -467,72 +462,89 @@ const attemptAutoReconnect = useCallback(() => {
     toastTimeoutRef.current = setTimeout(() => setShowToast(false), duration);
   };
 
-const storeMeasurementData = async (reading) => {
-  try {
-    const currentDevice = connectedDeviceRef.current;
-    
-    const deviceData = {
-      devId: currentDevice?.id || 'bp_device_001',
-      devType: DEV_TYPE,
-      data: {
-        systolic: reading.systolic,
-        diastolic: reading.diastolic,
-        pulse: reading.bpm,
-        mean: reading.mean,
-        timestamp: new Date().toISOString(),
-        date: reading.date,
-        time: reading.time,
-        deviceInfo: {
-          name: currentDevice?.name || 'Blood Pressure Monitor',
-          id: currentDevice?.id || 'unknown_device_id',
-          batteryLevel: currentDevice?.batteryLevel, // Battery info sent here
-          type: 'viatom'
+  // Data Storage
+  const storeMeasurementData = async (reading) => {
+    try {
+      const currentDevice = connectedDeviceRef.current;
+      
+      const deviceData = {
+        devId: currentDevice?.id || 'bp_device_001',
+        devType: DEV_TYPE,
+        data: {
+          systolic: reading.systolic,
+          diastolic: reading.diastolic,
+          pulse: reading.bpm,
+          mean: reading.mean,
+          timestamp: new Date().toISOString(),
+          date: reading.date,
+          time: reading.time,
+          deviceInfo: {
+            name: currentDevice?.name || 'Blood Pressure Monitor',
+            id: currentDevice?.id || 'unknown_device_id',
+            batteryLevel: currentDevice?.batteryLevel,
+            type: 'viatom'
+          }
         }
-      }
-    };
+      };
+      
+      console.log('📤 Storing device data with battery:', deviceData);
+      await storeDeviceData(deviceData);
+      console.log('✅ Device data stored with battery info');
+
+      loadHistoricalData(filterDays);
+    } catch (error) {
+      console.error('❌ Failed to store device data:', error);
+      Alert.alert(
+        'Data Upload Failed',
+        'Unable to send blood pressure data to the server. Please check your internet connection or try again later.',
+        [{ text: 'OK', style: 'default' }],
+        { cancelable: true }
+      );
+    }
+  };
+
+  // Historical Data Management
+const loadHistoricalData = async (days = 7) => {
+  try {
+    setIsLoading(true);
+    const data = await fetchHistoricalData(days);
+    const formattedData = data.map(item => ({
+      id: item.id,
+      date: new Date(item.createdAt).toLocaleDateString(),
+      time: new Date(item.createdAt).toLocaleTimeString(),
+      systolic: item.data.systolic,
+      diastolic: item.data.diastolic,
+      bpm: item.data.pulse,
+      mean: item.data.mean,
+      timestamp: item.createdAt
+    }));
     
-    console.log('📤 Storing device data with battery:', deviceData);
-    await storeDeviceData(deviceData);
-    console.log('✅ Device data stored with battery info');
-
-    loadHistoricalData(filterDays);
+    // Sort by timestamp in descending order (newest first) when loading
+    const sortedData = formattedData.sort((a, b) => {
+      const dateA = new Date(a.timestamp);
+      const dateB = new Date(b.timestamp);
+      return dateB - dateA; // Descending order (newest first)
+    });
+    
+    setHistoricalData(sortedData);
+    setFilterDays(days);
   } catch (error) {
-    console.error('❌ Failed to store device data:', error);
-
-        // Add this alert to inform user if data not sent to backend
-    Alert.alert(
-      'Data Upload Failed',
-      'Unable to send blood pressure data to the server. Please check your internet connection or try again later.',
-      [{ text: 'OK', style: 'default' }],
-      { cancelable: true }
-    );
+    console.error('Error loading historical data:', error);
+    showToastMessage('Failed to load historical data');
+  } finally {
+    setIsLoading(false);
+    setRefreshing(false);
   }
 };
 
-  const loadHistoricalData = async (days = 7) => {
-    try {
-      setIsLoading(true);
-      const data = await fetchHistoricalData(days);
-      const formattedData = data.map(item => ({
-        id: item.id,
-        date: new Date(item.createdAt).toLocaleDateString(),
-        time: new Date(item.createdAt).toLocaleTimeString(),
-        systolic: item.data.systolic,
-        diastolic: item.data.diastolic,
-        bpm: item.data.pulse,
-        mean: item.data.mean,
-        timestamp: item.createdAt
-      }));
-      setHistoricalData(formattedData);
-      setFilterDays(days);
-    } catch (error) {
-      console.error('Error loading historical data:', error);
-      showToastMessage('Failed to load historical data');
-    } finally {
-      setIsLoading(false);
-      setRefreshing(false);
-    }
-  };
+// Add this useEffect to handle connection state synchronization
+useEffect(() => {
+  // Check if we have a connected device but UI shows disconnected
+  if (connectedDeviceRef.current && !connectedDevice) {
+    console.log('[UI] Synchronizing connection state - device is connected but UI shows disconnected');
+    setConnectedDevice(connectedDeviceRef.current);
+  }
+}, [connectedDevice]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -550,7 +562,6 @@ const storeMeasurementData = async (reading) => {
   };
 
   const getDisplayData = () => {
-    // sort a copy (avoid mutating state)
     return [...historicalData].sort((a, b) => {
       const dateA = new Date(a.timestamp || a.date);
       const dateB = new Date(b.timestamp || b.date);
@@ -558,163 +569,25 @@ const storeMeasurementData = async (reading) => {
     });
   };
 
-  // Add this useEffect to debug connected device state
-useEffect(() => {
-  console.log('🔧 Connected Device State Updated:', {
-    name: connectedDevice?.name,
-    id: connectedDevice?.id,
-    exists: !!connectedDevice
-  });
-}, [connectedDevice]);
-
-  // ----- Native Event Subscriptions (attach once) -----
-  useEffect(() => {
-    // Load initial historical data
-    loadHistoricalData(7);
-
-const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
-  console.log('[BLE] Discovered:', device);
-  
-  // If this looks like our BP device and we're trying to auto-reconnect, attempt connection
-  if (shouldAutoReconnect && device.name && device.name.includes('BP2A')) {
-    console.log('[BP] Auto-reconnect: Found BP device, attempting connection');
-    // Small delay to avoid connection storms
-    setTimeout(() => {
-      if (!connectedDevice) {
-        connectToDevice(device.id);
-      }
-    }, 1000);
-  }
-  
-  setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
-});
-
-const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
-  console.log('[BLE] Connected:', device);
-  
-  // Ensure device info is properly set
-  const deviceInfo = {
-    name: device.name || 'BP2A 2943', // Fallback name from discovery
-    id: device.id,
-    batteryLevel: batteryLevel
+  // Measurement State Management
+  const updateMeasurementState = (updates) => {
+    setMeasurementState(prev => ({
+      ...prev,
+      ...updates
+    }));
   };
-  
-  setConnectedDevice(deviceInfo);
-  
-  // Store device info in ref with battery
-  connectedDeviceRef.current = deviceInfo;
-  console.log('💾 Stored device in ref:', connectedDeviceRef.current);
-  
-  ViatomDeviceManager.requestDeviceInfo?.();
-  ViatomDeviceManager.requestBPConfig?.();
-  
-  // Stop scanning once connected
-  ViatomDeviceManager.stopScan?.();
-});
 
-const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
-  console.log('[BLE] Disconnected:', payload);
-  setConnectedDevice(null);
-  // Clear the ref when disconnected
-  connectedDeviceRef.current = null;
-  setRealTimeData(null);
-  setIsMeasuring(false);
-  if (measurementTimeoutRef.current) {
-    clearTimeout(measurementTimeoutRef.current);
-    measurementTimeoutRef.current = null;
-  }
-  // Native does a recovery scan. Nudge a normal scan soon for UX.
-  setTimeout(() => safeStartScan(), 600);
-});
-
-    const dataSubscription = ViatomDeviceManager.addListener('onRealTimeData', (data) => {
-      console.log('[DATA] onRealTimeData:', data);
-      handleRealTimeData(data);
+  const resetMeasurementState = () => {
+    setMeasurementState({
+      isMeasuring: false,
+      isDeviceInitiated: false,
+      hasError: false,
+      error: null
     });
-
-const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
-  if (evt?.type !== 'BP_RESULT') return;
-  console.log('[BP] Final Result received:', evt);
-
-  stopMeasurementUIOnly();
-  const now = new Date();
-  
-  // Use the ref to get device info
-  const currentDevice = connectedDeviceRef.current;
-  console.log('💾 Device info from ref:', currentDevice);
-  
-  const newReading = {
-    id: Date.now(),
-    date: now.toLocaleDateString(),
-    time: now.toLocaleTimeString(),
-    systolic: Number(evt.systolic),
-    diastolic: Number(evt.diastolic),
-    bpm: Number(evt.pulse),
-    mean: Number(evt.meanPressure),
-    timestamp: now.toISOString(),
-    // Include device info from ref
-    deviceName: currentDevice?.name,
-    deviceId: currentDevice?.id
+    setRealTimeData(null);
   };
-  console.log('📝 Final reading with device:', { 
-    deviceName: currentDevice?.name, 
-    deviceId: currentDevice?.id 
-  });
-  storeMeasurementData(newReading);
-  setRealTimeData({
-    type: 'BP',
-    systolic: newReading.systolic,
-    diastolic: newReading.diastolic,
-    pulse: newReading.bpm,
-    mean: newReading.mean,
-    phase: 'done',
-  });
-  showToastMessage(
-    `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
-    3000
-  );
-});
 
-    const modeSubscription = ViatomDeviceManager.addListener('onBPModeChanged', (payload) => {
-      console.log('[BP] Mode changed:', payload);
-      if (payload?.active === false) setIsMeasuring(false);
-    });
-
-    const statusSubscription = ViatomDeviceManager.addListener('onBPStatusChanged', (payload) => {
-      console.log('[BP] Status:', payload);
-      if (payload?.status === 'measurement_started') {
-        showToastMessage('Measurement started');
-        setIsMeasuring(true);
-      } else if (payload?.status === 'measurement_ending') {
-        showToastMessage('Finishing up…');
-      } else if (payload?.status === 'measurement_completed') {
-        showToastMessage('Measurement complete');
-        stopMeasurementUIOnly();
-      }
-    });
-
-    const errorSubscription = ViatomDeviceManager.addListener('onDeviceError', (err) => {
-      console.warn('[BP] Error:', err);
-      showToastMessage(err?.message || err?.error || 'Device error');
-      setIsMeasuring(false);
-    });
-
-    return () => {
-      discoverySubscription.remove();
-      connectionSubscription.remove();
-      disconnectionSubscription.remove();
-      dataSubscription.remove();
-      resultSubscription.remove();
-      modeSubscription.remove();
-      statusSubscription.remove();
-      errorSubscription.remove();
-
-      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-      if (measurementTimeoutRef.current) clearTimeout(measurementTimeoutRef.current);
-    };
-  }, []);
-
-  // ----- Safe scan wrapper to avoid duplicate scans -----
+  // Safe Scan Management
   const safeStartScan = useCallback(() => {
     if (scanGuardRef.current) return;
     scanGuardRef.current = true;
@@ -723,159 +596,305 @@ const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult'
     setTimeout(() => { scanGuardRef.current = false; }, 1500);
   }, []);
 
-  // ----- Screen focus: scan if not connected -----
-// Add this useEffect to handle the auto-reconnect logic more aggressively
-useEffect(() => {
-  // When we have historical data loaded but no device connected, force reconnection
-  if (historicalData.length > 0 && !connectedDevice && shouldAutoReconnect) {
-    console.log('[BP] Historical data loaded but no device - forcing reconnection attempt');
-    // Give a small delay to allow any ongoing native auto-reconnect to complete
-    const reconnectTimer = setTimeout(() => {
+  // Device Connection Management
+  const connectToDevice = (deviceId) => {
+    console.log('[BLE] Connect to:', deviceId);
+    ViatomDeviceManager.enableAutoReconnect?.(true);
+    ViatomDeviceManager.connectToDevice?.(deviceId);
+  };
+
+  const disconnectDevice = () => {
+    console.log('[BLE] Manual disconnect');
+    ViatomDeviceManager.enableAutoReconnect?.(false);
+    ViatomDeviceManager.disconnectDevice?.();
+    setConnectedDevice(null);
+    resetMeasurementState();
+  };
+
+  // Real-time Data Handler
+  const handleRealTimeData = (data) => {
+    if (!data || !data.type) return;
+
+    // Handle battery updates
+    if (data.type === 'BP_STATUS_UPDATE') {
+      console.log('[UI] Battery update received:', data);
+      if (typeof data.batteryLevel === 'number') {
+        setBatteryLevel(data.batteryLevel);
+        if (connectedDeviceRef.current) {
+          connectedDeviceRef.current.batteryLevel = data.batteryLevel;
+        }
+      }
+      return;
+    }
+
+    // Handle measurement progress
+    if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+      const defl = !!data.isDeflating;
+      const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
+      const phase = data.phase || (defl ? 'deflating' : 'inflating');
+      
+      setRealTimeData({
+        type: 'BP_PROGRESS',
+        pressure: Number(data.pressure) || 0,
+        isDeflating: defl,
+        isInflating: infl,
+        phase,
+        hasPulse: !!data.hasPulse,
+        pulseRate: Number(data.pulseRate) || 0,
+      });
+
+      if (!defl && (data.pressure ?? 0) > 0) {
+        showToastMessage('Inflating...', 1000);
+      } else if (defl) {
+        showToastMessage('Deflating...', 1000);
+      }
+      return;
+    }
+
+    // Handle final measurement result
+    if (data.type === 'BP') {
+      resetMeasurementState();
+      const now = new Date();
+      const currentDevice = connectedDeviceRef.current;
+      
+      const newReading = {
+        id: Date.now(),
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString(),
+        systolic: Number(data.systolic),
+        diastolic: Number(data.diastolic),
+        bpm: Number(data.pulse),
+        mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
+        timestamp: now.toISOString(),
+        deviceName: currentDevice?.name,
+        deviceId: currentDevice?.id
+      };
+      
+      console.log('📝 Final reading with device:', { 
+        deviceName: currentDevice?.name, 
+        deviceId: currentDevice?.id 
+      });
+      
+      storeMeasurementData(newReading);
+      showToastMessage(
+        `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+        3000
+      );
+      
+      setRealTimeData({
+        type: 'BP',
+        systolic: newReading.systolic,
+        diastolic: newReading.diastolic,
+        pulse: newReading.bpm,
+        mean: newReading.mean,
+      });
+      return;
+    }
+  };
+
+  // Event Subscriptions
+  useEffect(() => {
+    loadHistoricalData(7);
+
+    const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
+      console.log('[BLE] Discovered:', device);
+      setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
+    });
+
+// Replace your current connectionSubscription in useEffect
+const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
+  console.log('[BLE] Connected:', device);
+  
+  const deviceInfo = {
+    name: device.name || 'BP2A 2943',
+    id: device.id,
+    batteryLevel: batteryLevel
+  };
+  
+  setConnectedDevice(deviceInfo);
+  connectedDeviceRef.current = deviceInfo;
+  console.log('💾 Stored device in ref:', connectedDeviceRef.current);
+  
+  ViatomDeviceManager.requestDeviceInfo?.();
+  ViatomDeviceManager.requestBPConfig?.();
+  
+  ViatomDeviceManager.stopScan?.();
+  
+  // Force UI update
+  setConnectedDevice(prev => ({...prev}));
+});
+
+const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisconnected', (payload) => {
+  console.log('[BLE] Disconnected:', payload);
+  setConnectedDevice(null);
+  connectedDeviceRef.current = null;
+  resetMeasurementState();
+  
+  // Force UI update
+  setConnectedDevice(null);
+  
+  setTimeout(() => safeStartScan(), 600);
+});
+
+    const dataSubscription = ViatomDeviceManager.addListener('onRealTimeData', (data) => {
+      console.log('[DATA] onRealTimeData:', data);
+      handleRealTimeData(data);
+    });
+
+    const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
+      if (evt?.type !== 'BP_RESULT') return;
+      console.log('[BP] Final Result received:', evt);
+
+      resetMeasurementState();
+      const now = new Date();
+      const currentDevice = connectedDeviceRef.current;
+      
+      const newReading = {
+        id: Date.now(),
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString(),
+        systolic: Number(evt.systolic),
+        diastolic: Number(evt.diastolic),
+        bpm: Number(evt.pulse),
+        mean: Number(evt.meanPressure),
+        timestamp: now.toISOString(),
+        deviceName: currentDevice?.name,
+        deviceId: currentDevice?.id
+      };
+      
+      console.log('📝 Final reading with device:', { 
+        deviceName: currentDevice?.name, 
+        deviceId: currentDevice?.id 
+      });
+      
+      storeMeasurementData(newReading);
+      setRealTimeData({
+        type: 'BP',
+        systolic: newReading.systolic,
+        diastolic: newReading.diastolic,
+        pulse: newReading.bpm,
+        mean: newReading.mean,
+        phase: 'done',
+      });
+      
+      showToastMessage(
+        `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+        3000
+      );
+    });
+
+    const statusSubscription = ViatomDeviceManager.addListener('onBPStatusChanged', (payload) => {
+      console.log('[BP] Status:', payload);
+      
+      switch (payload?.status) {
+        case 'measurement_started':
+          updateMeasurementState({
+            isMeasuring: true,
+            isDeviceInitiated: payload.deviceInitiated || false,
+            hasError: false,
+            error: null
+          });
+          showToastMessage('Measurement started');
+          break;
+          
+        case 'measurement_completed':
+          updateMeasurementState({ isMeasuring: false });
+          showToastMessage('Measurement complete before final ready');
+          break;
+          
+        case 'measurement_stopped':
+        case 'measurement_aborted':
+          resetMeasurementState();
+          showToastMessage(payload.reason === 'manual_stop' ? 'Measurement stopped before completion' : 'Measurement stopped');
+          break;
+          
+        default:
+          break;
+      }
+    });
+
+    const errorSubscription = ViatomDeviceManager.addListener('onDeviceError', (error) => {
+      console.log('[BP] Device Error:', error);
+      
+      setDeviceError({
+        code: error.error,
+        message: error.message,
+        isCritical: error.isCritical || false,
+        timestamp: Date.now()
+      });
+      
+      // Reset measurement state on any device error
+      if (measurementState.isMeasuring) {
+        resetMeasurementState();
+      }
+      
+      // Show appropriate message based on error code
+      let userMessage = error.message;
+      switch (error.error) {
+        case 'DEVICE_BUSY':
+          userMessage = 'Device is busy. Please wait or restart the device.';
+          break;
+        case 'MEASUREMENT_STOPPED':
+          userMessage = 'Measurement was stopped. Please try again.';
+          break;
+        case 'CRC_ERROR':
+        case 'HEADER_ERROR':
+          userMessage = 'Communication error. Please reconnect the device.';
+          break;
+        case 'DEVICE_DISCONNECTED':
+          userMessage = 'Device disconnected. Please reconnect.';
+          break;
+        case 'MEASUREMENT_TIMEOUT':
+          userMessage = 'Measurement timeout. Please try again.';
+          break;
+      }
+      
+      showToastMessage(userMessage, 4000);
+    });
+
+    return () => {
+      discoverySubscription.remove();
+      connectionSubscription.remove();
+      disconnectionSubscription.remove();
+      dataSubscription.remove();
+      resultSubscription.remove();
+      statusSubscription.remove();
+      errorSubscription.remove();
+
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
+
+  // Screen Focus Management
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[BP] Screen focused, checking connection state');
+      
+      ViatomDeviceManager.enableAutoReconnect?.(true);
+      
       if (!connectedDevice) {
-        console.log('[BP] Force starting scan for reconnection');
+        console.log('[BP] No connected device, starting scan');
         safeStartScan();
         
-        // Enable more aggressive scanning for reconnection
-        ViatomDeviceManager.enableAutoReconnect?.(true);
+        const scanTimeout = setTimeout(() => {
+          if (!connectedDevice) {
+            console.log('[BP] Extended scan complete, stopping');
+            ViatomDeviceManager.stopScan?.();
+          }
+        }, 15000);
+        
+        return () => clearTimeout(scanTimeout);
+      } else {
+        console.log('[BP] Device already connected:', connectedDevice.name);
       }
-    }, 2000);
-    
-    return () => clearTimeout(reconnectTimer);
-  }
-}, [historicalData, connectedDevice, shouldAutoReconnect]);
-
-// Update the useFocusEffect to be more aggressive about reconnection
-useFocusEffect(
-  useCallback(() => {
-    console.log('[BP] Screen focused, checking connection state');
-    
-    // Always enable auto-reconnect when coming to this screen
-    setShouldAutoReconnect(true);
-    ViatomDeviceManager.enableAutoReconnect?.(true);
-    
-    if (!connectedDevice) {
-      console.log('[BP] No connected device, starting aggressive scan');
-      // Don't clear devices - keep previous discoveries
-      safeStartScan();
       
-      // Set a longer timeout for reconnection scenarios
-      const scanTimeout = setTimeout(() => {
-        if (!connectedDevice) {
-          console.log('[BP] Extended scan complete, stopping');
-          ViatomDeviceManager.stopScan?.();
-        }
-      }, 15000); // 15 seconds for reconnection
-      
-      return () => clearTimeout(scanTimeout);
-    } else {
-      console.log('[BP] Device already connected:', connectedDevice.name);
-    }
-    
-    return () => {
-      console.log('[BP] Screen unfocused - keeping background connection');
-      // Don't stop scanning completely, allow background reconnection
-    };
-  }, [connectedDevice, safeStartScan])
-);
-
-// Add this useEffect to handle connection state changes
-useEffect(() => {
-  // When device disconnects, enable auto-reconnect for next focus
-  if (!connectedDevice) {
-    setShouldAutoReconnect(true);
-  }
-}, [connectedDevice]);
-
-
-const handleRealTimeData = (data) => {
-  if (!data || !data.type) return;
-
-if (data.type === 'BP_STATUS_UPDATE') {
-  console.log('[UI] Battery update received:', data);
-  if (typeof data.batteryLevel === 'number') {
-    setBatteryLevel(data.batteryLevel);
-    // Store battery level in the device ref
-    if (connectedDeviceRef.current) {
-      connectedDeviceRef.current.batteryLevel = data.batteryLevel;
-    }
-    console.log('🔋 Battery level stored:', data.batteryLevel);
-  }
-  return;
-}
-
-  if (data.type === 'BP_REALDATA_REQUESTED') {
-    showToastMessage(data.message || 'Request real data.');
-    setIsMeasuring(true);
-    return;
-  }
-
-  if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
-    const defl = !!data.isDeflating;
-    const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
-    const phase = data.phase || (defl ? 'deflating' : 'inflating');
-    setRealTimeData({
-      type: 'BP_PROGRESS',
-      pressure: Number(data.pressure) || 0,
-      isDeflating: defl,
-      isInflating: infl,
-      phase,
-      hasPulse: !!data.hasPulse,
-      pulseRate: Number(data.pulseRate) || 0,
-    });
-    if (!defl && (data.pressure ?? 0) > 0) showToastMessage('Inflating...');
-    else if (defl) showToastMessage('Deflating...');
-    setIsMeasuring(true);
-    return;
-  }
-
-if (data.type === 'BP') {
-  stopMeasurementUIOnly();
-  const now = new Date();
-  // Use the ref to get device info
-  const currentDevice = connectedDeviceRef.current;
-  
-  const newReading = {
-    id: Date.now(),
-    date: now.toLocaleDateString(),
-    time: now.toLocaleTimeString(),
-    systolic: Number(data.systolic),
-    diastolic: Number(data.diastolic),
-    bpm: Number(data.pulse),
-    mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
-    timestamp: now.toISOString(),
-    // Include device info from ref
-    deviceName: currentDevice?.name,
-    deviceId: currentDevice?.id
-  };
-  console.log('📝 Storing reading with device:', { 
-    deviceName: currentDevice?.name, 
-    deviceId: currentDevice?.id 
-  });
-  storeMeasurementData(newReading);
-  showToastMessage(
-    `Measurement: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
-    3000
+      return () => {
+        console.log('[BP] Screen unfocused - keeping background connection');
+      };
+    }, [connectedDevice, safeStartScan])
   );
-  setRealTimeData({
-    type: 'BP',
-    systolic: newReading.systolic,
-    diastolic: newReading.diastolic,
-    pulse: newReading.bpm,
-    mean: newReading.mean,
-  });
-  return;
-}
-};
 
-  const stopMeasurementUIOnly = () => {
-    if (measurementTimeoutRef.current) {
-      clearTimeout(measurementTimeoutRef.current);
-      measurementTimeoutRef.current = null;
-    }
-    setIsMeasuring(false);
-  };
-
-  // ----- Scanning helpers (modal buttons still use these) -----
+  // Scanning Management
   const startScanning = () => {
     console.log('[BLE] Start scanning (manual)');
     setDevices([]);
@@ -893,87 +912,178 @@ if (data.type === 'BP') {
     ViatomDeviceManager.stopScan?.();
   };
 
-const connectToDevice = (deviceId) => {
-  console.log('[BLE] Connect to:', deviceId);
-  setShouldAutoReconnect(true); // Enable auto-reconnect when user manually connects
-  ViatomDeviceManager.connectToDevice?.(deviceId);
-};
-
-const disconnectDevice = () => {
-  console.log('[BLE] Disconnect - disabling auto-reconnect');
-  setShouldAutoReconnect(false); // User manually disconnected, don't auto-reconnect
-  ViatomDeviceManager.disconnectDevice?.();
-  setConnectedDevice(null);
-  setRealTimeData(null);
-  setIsMeasuring(false);
-};
-
-  const startMeasurement = () => {
-    if (!connectedDevice) {
-      Alert.alert('Error', 'Please connect to a device first');
-      return;
-    }
-    setRealTimeData(null);
-    setIsMeasuring(true);
-
-    console.log('[BP] Starting measurement (native will request live stream)');
-    ViatomDeviceManager.startBPMeasurement?.();
-
-    ViatomDeviceManager.requestBPRunStatus?.();
-
-    if (measurementTimeoutRef.current) clearTimeout(measurementTimeoutRef.current);
-    measurementTimeoutRef.current = setTimeout(() => {
-      Alert.alert(
-        'Measurement Timeout',
-        'The measurement took too long. Please check device connection and try again.'
-      );
-      setIsMeasuring(false);
-      measurementTimeoutRef.current = null;
-    }, 180000);
-  };
-
-  const stopMeasurement = () => {
-    console.log('[BP] Stop measurement (user action)');
-    ViatomDeviceManager.stopBPMeasurement?.();
-    stopMeasurementUIOnly();
-  };
-
   const handleBack = () => navigation?.navigate?.('Home');
 
-  // ----- Modals -----
-  const renderFilterModal = () => (
-    <Modal
-      visible={showFilterModal}
-      transparent
-      animationType="slide"
-      onRequestClose={() => setShowFilterModal(false)}
-    >
-      <View style={styles.modalContainer}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Select Time Period</Text>
-          <Text style={styles.modalSubtitle}>Show data from last:</Text>
+  // Error Display Component
+  const renderErrorDisplay = () => {
+    if (!deviceError) return null;
+    
+    return (
+      <View style={[
+        styles.errorContainer,
+        deviceError.isCritical && styles.criticalErrorContainer
+      ]}>
+        <Text style={styles.errorTitle}>
+          {deviceError.isCritical ? 'Critical Device Error' : 'Device Error'}
+        </Text>
+        <Text style={styles.errorMessage}>{deviceError.message}</Text>
+        <Text style={styles.errorCode}>Code: {deviceError.code}</Text>
+        
+        <TouchableOpacity 
+          style={styles.dismissErrorButton}
+          onPress={() => setDeviceError(null)}
+        >
+          <Text style={styles.dismissErrorText}>Dismiss</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
-          {[7, 14, 21, 30].map(days => (
-            <TouchableOpacity
-              key={days}
-              style={[styles.filterOption, filterDays === days && styles.filterOptionActive]}
-              onPress={() => { loadHistoricalData(days); setShowFilterModal(false); }}
-            >
-              <Text style={[styles.filterOptionText, filterDays === days && styles.filterOptionTextActive]}>
-                {days} {days === 1 ? 'Day' : 'Days'}
-              </Text>
-              {filterDays === days && <Text style={styles.selectedIndicator}>✓</Text>}
-            </TouchableOpacity>
-          ))}
-
-          <TouchableOpacity style={styles.cancelButton} onPress={() => setShowFilterModal(false)}>
-            <Text style={styles.cancelButtonText}>Cancel</Text>
-          </TouchableOpacity>
+  // Connection Status Component
+  const renderConnectionStatus = () => (
+    <View style={styles.deviceRow}>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Image
+          source={require('./assets/device_bp.png')}
+          style={[styles.deviceImage, { borderColor: globalStyles.primaryColor.color }]}
+          resizeMode="contain"
+        />
+        
+        <View>
+          <Text style={styles.deviceName}>{connectedDevice?.name || 'Blood Pressure Monitor'}</Text>
+          <Text style={[styles.connectedText, { color: globalStyles.primaryColor.color }]}>
+            {connectedDevice ? 'Connected' : 'Disconnected'}
+          </Text>
         </View>
       </View>
-    </Modal>
+      
+      {batteryLevel !== null && (
+        <View style={[styles.batteryPill, { borderColor: '#E5E7EB' }]}>
+          <Text style={styles.batteryText}>{batteryLevel}%</Text>
+        </View>
+      )}
+    </View>
   );
 
+  // Device Controls Component
+  const renderDeviceControls = () => (
+    <View style={styles.controlsContainer}>
+      <Text style={{ 
+        textAlign: 'center', 
+        color: '#666', 
+        fontSize: 14,
+        marginBottom: 10
+      }}>
+        Measurement will start automatically when you press the button on your BP device.
+      </Text>
+      
+      {measurementState.isMeasuring && (
+        <View style={styles.measuringStatus}>
+          <ActivityIndicator size="small" color={globalStyles.primaryColor.color} />
+          <Text style={styles.measuringStatusText}>
+            {measurementState.isDeviceInitiated ? 'Device-initiated' : 'App-initiated'} measurement in progress...
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+
+  // Real-time Data Display
+// Enhanced Real-time Data Display with Live Pressure
+const renderRealTimeData = () => {
+  if (!realTimeData) return null;
+
+  return (
+    <View style={styles.realTimeContainer}>
+      <Text style={styles.realTimeTitle}>
+        {realTimeData.type === 'BP_PROGRESS' ? 'Live Measurement' : 'Measurement Result'}
+      </Text>
+
+      {realTimeData.type === 'BP_PROGRESS' && (
+        <>
+          {/* Live Pressure Display - More Prominent */}
+          <View style={styles.livePressureContainer}>
+            <Text style={styles.livePressureLabel}>CURRENT PRESSURE</Text>
+            <Text style={[
+              styles.livePressureValue,
+              { color: realTimeData.pressure > 180 ? '#e74c3c' : 
+                      realTimeData.pressure > 120 ? '#f39c12' : '#3498db' }
+            ]}>
+              {Math.round(realTimeData.pressure)} mmHg
+            </Text>
+            <View style={styles.pressureTrend}>
+              <Text style={styles.pressureTrendText}>
+                {realTimeData.isInflating ? '🔼 Inflating' : '🔽 Deflating'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.measurementDetails}>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Status:</Text>
+              <Text style={[
+                styles.detailValue,
+                { color: realTimeData.isDeflating ? '#f39c12' : '#3498db' }
+              ]}>
+                {realTimeData.isDeflating ? 'Deflating' : 'Inflating'}
+              </Text>
+            </View>
+
+            {realTimeData.hasPulse && realTimeData.pulseRate > 0 && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Pulse Detected:</Text>
+                <Text style={[styles.detailValue, { color: '#27ae60' }]}>
+                  {realTimeData.pulseRate} BPM
+                </Text>
+              </View>
+            )}
+          </View>
+        </>
+      )}
+
+      {realTimeData.type === 'BP' && (
+        <>
+          <View style={styles.finalResultContainer}>
+            <Text style={styles.finalResultLabel}>FINAL RESULT</Text>
+            <Text style={styles.finalResultValue}>
+              {realTimeData.systolic ?? 0}/{realTimeData.diastolic ?? 0} mmHg
+            </Text>
+          </View>
+
+          <View style={styles.measurementDetails}>
+            {typeof realTimeData.mean === 'number' && (
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Mean Pressure:</Text>
+                <Text style={styles.detailValue}>{realTimeData.mean} mmHg</Text>
+              </View>
+            )}
+
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Pulse Rate:</Text>
+              <Text style={[styles.detailValue, { color: '#27ae60' }]}>
+                {realTimeData.pulse ?? 0} BPM
+              </Text>
+            </View>
+          </View>
+        </>
+      )}
+
+      {/* Measurement Progress Indicator */}
+      {/* {measurementState.isMeasuring && (
+        <View style={styles.measuringIndicator}>
+          <ActivityIndicator size="small" color={globalStyles.primaryColor.color} />
+          <Text style={styles.measuringText}>
+            {realTimeData.type === 'BP_PROGRESS' ? 
+             `Measuring... ${Math.round(realTimeData.pressure)} mmHg` : 
+             'Measurement in progress...'}
+          </Text>
+        </View>
+      )} */}
+    </View>
+  );
+};
+
+  // Device Connection Modal
   const renderDeviceConnectionModal = () => (
     <Modal
       visible={showDeviceModal}
@@ -981,7 +1091,6 @@ const disconnectDevice = () => {
       animationType="fade"
       onRequestClose={() => setShowDeviceModal(false)}
       onShow={() => {
-        // auto-scan when opening modal while disconnected
         if (!connectedDevice) startScanning();
       }}
     >
@@ -1069,138 +1178,48 @@ const disconnectDevice = () => {
     </Modal>
   );
 
-  // ----- Header connection status row -----
+  // Filter Modal
+  const renderFilterModal = () => (
+    <Modal
+      visible={showFilterModal}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setShowFilterModal(false)}
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Select Time Period</Text>
+          <Text style={styles.modalSubtitle}>Show data from last:</Text>
 
-const renderConnectionStatus = () => (
-  <View style={styles.deviceRow}>
-    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-      <Image
-        source={require('./assets/device_bp.png')} // Use your BP device image
-        style={[styles.deviceImage, { borderColor: globalStyles.primaryColor.color }]}
-        resizeMode="contain"
-      />
-      
-      <View>
-        <Text style={styles.deviceName}>{connectedDevice?.name || 'Blood Pressure Monitor'}</Text>
-        <Text style={[styles.connectedText, { color: globalStyles.primaryColor.color }]}>
-          {connectedDevice ? 'Connected' : 'Disconnected'}
-        </Text>
-      </View>
-    </View>
-    
-    {batteryLevel !== null && (
-      <View style={[styles.batteryPill, { borderColor: '#E5E7EB' }]}>
-        <Text style={styles.batteryText}>{batteryLevel}%</Text>
-      </View>
-    )}
-  </View>
-);
+          {[7, 14, 21, 30].map(days => (
+            <TouchableOpacity
+              key={days}
+              style={[styles.filterOption, filterDays === days && styles.filterOptionActive]}
+              onPress={() => { loadHistoricalData(days); setShowFilterModal(false); }}
+            >
+              <Text style={[styles.filterOptionText, filterDays === days && styles.filterOptionTextActive]}>
+                {days} {days === 1 ? 'Day' : 'Days'}
+              </Text>
+              {filterDays === days && <Text style={styles.selectedIndicator}>✓</Text>}
+            </TouchableOpacity>
+          ))}
 
-  const renderDeviceControls = () => (
-    <View style={styles.controlsContainer}>
-      <TouchableOpacity
-        style={[styles.controlButton, isMeasuring && styles.controlButtonActive]}
-        onPress={isMeasuring ? stopMeasurement : startMeasurement}
-        disabled={!connectedDevice}
-      >
-        <Text style={styles.controlButtonText}>{isMeasuring ? 'Stop Measurement' : 'Start Measurement'}</Text>
-      </TouchableOpacity>
-    </View>
+          <TouchableOpacity style={styles.cancelButton} onPress={() => setShowFilterModal(false)}>
+            <Text style={styles.cancelButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
   );
 
-  const renderRealTimeData = () => {
-    if (!realTimeData) return null;
-
-    return (
-      <View style={styles.realTimeContainer}>
-        <Text style={styles.realTimeTitle}>Real-time Data</Text>
-
-        {realTimeData.type === 'BP_PROGRESS' && (
-          <>
-            <View style={styles.measurementRow}>
-              <Text style={styles.measurementLabel}>Current Pressure:&nbsp;</Text>
-              <Text
-                style={[
-                  styles.measurementValue,
-                  { color: realTimeData.pressure > 0 ? '#e74c3c' : '#95a5a6' },
-                ]}
-              >
-                {realTimeData.pressure ?? 0} mmHg
-              </Text>
-            </View>
-
-            <View style={styles.measurementRow}>
-              <Text style={styles.measurementLabel}>Status:&nbsp;</Text>
-              <Text
-                style={[
-                  styles.measurementValue,
-                  { color: realTimeData.isDeflating ? '#f39c12' : '#3498db' },
-                ]}>
-                {realTimeData.isDeflating ? 'Deflating...' : 'Inflating...'}
-              </Text>
-            </View>
-
-            {realTimeData.hasPulse && realTimeData.pulseRate > 0 && (
-              <View style={styles.measurementRow}>
-                <Text style={styles.measurementLabel}>Pulse Detected:&nbsp;</Text>
-                <Text style={[styles.measurementValue, { color: '#27ae60' }]}>
-                  {realTimeData.pulseRate} BPM
-                </Text>
-              </View>
-            )}
-          </>
-        )}
-
-        {realTimeData.type === 'BP' && (
-          <>
-            <View style={styles.measurementRow}>
-              <Text style={styles.measurementLabel}>Result:&nbsp;</Text>
-              <Text style={[styles.measurementValue, { color: '#2c3e50', fontSize: 18 }]}>
-                {realTimeData.systolic ?? 0}/{realTimeData.diastolic ?? 0} mmHg
-              </Text>
-            </View>
-
-            {typeof realTimeData.mean === 'number' && (
-              <View style={styles.measurementRow}>
-                <Text style={styles.measurementLabel}>Mean:&nbsp;</Text>
-                <Text style={[styles.measurementValue]}>{realTimeData.mean} mmHg</Text>
-              </View>
-            )}
-
-            <View style={styles.measurementRow}>
-              <Text style={styles.measurementLabel}>Pulse:&nbsp;</Text>
-              <Text style={[styles.measurementValue, { color: '#27ae60' }]}>
-                {realTimeData.pulse ?? 0} BPM
-              </Text>
-            </View>
-          </>
-        )}
-
-        {isMeasuring && (
-          <View style={styles.measuringIndicator}>
-            <ActivityIndicator size="small" color={globalStyles.primaryColor.color} />
-            <Text style={styles.measuringText}>
-              {realTimeData?.type === 'BP_PROGRESS' ? 'Measuring…' : 'Measurement in progress…'}
-            </Text>
-          </View>
-        )}
-      </View>
-    );
-  };
-
-  // const displayData = getDisplayData();
-  // const chartData = displayData.slice(0, 7).reverse();
-  // const xLabels = generateXLabels(chartData);
+  // Data Processing
   const displayData = getDisplayData();
-
-// FIXED: Use all historical data from the filtered period, sorted chronologically
-const chartData = [...historicalData].sort((a, b) => {
-  const dateA = new Date(a.timestamp || a.date);
-  const dateB = new Date(b.timestamp || b.date);
-  return dateA - dateB; // Sort oldest to newest for proper timeline
-});
-
-const xLabels = generateXLabels(chartData);
+  const chartData = [...historicalData].sort((a, b) => {
+    const dateA = new Date(a.timestamp || a.date);
+    const dateB = new Date(b.timestamp || b.date);
+    return dateA - dateB;
+  });
+  const xLabels = generateXLabels(chartData);
 
   return (
     <View style={styles.container}>
@@ -1214,6 +1233,7 @@ const xLabels = generateXLabels(chartData);
       </SafeAreaView>
 
       {renderConnectionStatus()}
+      {renderErrorDisplay()}
       {renderDeviceControls()}
       {renderRealTimeData()}
 
@@ -1443,127 +1463,104 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginRight: SCREEN_WIDTH * 0.08,
   },
-
   deviceRow: {
-  backgroundColor: '#FFFFFF', 
-  borderRadius: 16, 
-  borderWidth: 1, 
-  borderColor: '#E5E7EB',
-  padding: 12, 
-  marginBottom: 12, 
-  flexDirection: 'row', 
-  alignItems: 'center', 
-  justifyContent: 'space-between',
-  marginHorizontal: 12,
-  marginTop: 12,
-},
-deviceImage: {
-  width: 42,
-  height: 28,
-  borderRadius: 8,
-  backgroundColor: '#FFFFFF',
-  borderWidth: 1,
-  marginRight: 10,
-},
-deviceName: { 
-  color: '#111827', 
-  fontSize: 16, 
-  fontWeight: '700' 
-},
-connectedText: { 
-  fontSize: 12, 
-  marginTop: 2 
-},
-batteryPill: { 
-  paddingHorizontal: 10, 
-  paddingVertical: 6, 
-  borderRadius: 999, 
-  backgroundColor: '#FFFFFF', 
-  borderWidth: 1 
-},
-  connectionStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    backgroundColor: '#FFFFFF', 
+    borderRadius: 16, 
+    borderWidth: 1, 
+    borderColor: '#E5E7EB',
+    padding: 12, 
+    marginBottom: 12, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
     justifyContent: 'space-between',
-    padding: 16,
-    backgroundColor: '#fff',
-    margin: 10,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
-  },
-  statusSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  batterySection: {
-    flexDirection: 'row',
-    alignItems: 'center',
     marginHorizontal: 12,
+    marginTop: 12,
   },
-  connectSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  deviceImage: {
+    width: 42,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    marginRight: 10,
   },
-  statusIndicator: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 8,
+  deviceName: { 
+    color: '#111827', 
+    fontSize: 16, 
+    fontWeight: '700' 
   },
-  statusText: {
+  connectedText: { 
+    fontSize: 12, 
+    marginTop: 2 
+  },
+  batteryPill: { 
+    paddingHorizontal: 10, 
+    paddingVertical: 6, 
+    borderRadius: 999, 
+    backgroundColor: '#FFFFFF', 
+    borderWidth: 1 
+  },
+  batteryText: { 
+    color: '#374151', 
+    fontWeight: '700' 
+  },
+  errorContainer: {
+    backgroundColor: '#ffebee',
+    borderLeftWidth: 4,
+    borderLeftColor: '#f44336',
+    padding: 16,
+    margin: 10,
+    borderRadius: 8,
+  },
+  criticalErrorContainer: {
+    backgroundColor: '#ffcdd2',
+    borderLeftColor: '#d32f2f',
+  },
+  errorTitle: {
+    color: '#c62828',
+    fontWeight: 'bold',
     fontSize: 16,
-    fontWeight: '500',
-    color: '#333',
+    marginBottom: 8,
   },
-batteryText: { 
-  color: '#374151', 
-  fontWeight: '700' 
-},
-  connectButtonSmall: {
-    backgroundColor: '#f0f0f0',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    minWidth: 100,
-    alignItems: 'center',
-  },
-  connectButtonActive: {
-    backgroundColor: globalStyles.primaryColor.color,
-  },
-  connectButtonTextSmall: {
-    color: '#666',
+  errorMessage: {
+    color: '#d32f2f',
     fontSize: 14,
-    fontWeight: '600',
+    marginBottom: 4,
+  },
+  errorCode: {
+    color: '#999',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  dismissErrorButton: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginTop: 8,
+  },
+  dismissErrorText: {
+    color: '#1976d2',
+    fontSize: 14,
+    fontWeight: '500',
   },
   controlsContainer: {
     paddingHorizontal: 10,
     paddingBottom: 10,
   },
-  controlButton: {
-    backgroundColor: globalStyles.primaryColor.color,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 12,
+  measuringStatus: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    padding: 10,
+    backgroundColor: '#e8f5e8',
+    borderRadius: 8,
     marginHorizontal: 10,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
   },
-  controlButtonActive: {
-    backgroundColor: '#F44336',
-  },
-  controlButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+  measuringStatusText: {
+    marginLeft: 8,
+    color: '#2e7d32',
+    fontSize: 14,
+    fontWeight: '500',
   },
   realTimeContainer: {
     backgroundColor: '#fff',
@@ -1595,19 +1592,6 @@ batteryText: {
   measurementValue: {
     color: '#333',
     fontWeight: 'bold',
-    fontSize: 14,
-  },
-  measuringIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  measuringText: {
-    marginLeft: 8,
-    color: '#666',
     fontSize: 14,
   },
   modalOverlay: {
@@ -1657,11 +1641,6 @@ batteryText: {
     textAlign: 'center',
     color: '#666',
   },
-  modalText: {
-    fontSize: 16,
-    marginBottom: 20,
-    textAlign: 'center',
-  },
   deviceList: {
     maxHeight: 200,
     width: '100%',
@@ -1684,20 +1663,20 @@ batteryText: {
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
-deviceIcon: {
-  width: 40,
-  height: 40,
-  borderRadius: 20,
-  backgroundColor: '#f0f0f0',
-  justifyContent: 'center',
-  alignItems: 'center',
-  marginRight: 12,
-  overflow: 'hidden',
-},
-deviceIconImage: {
-  width: 24,
-  height: 24,
-},
+  deviceIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  deviceIconImage: {
+    width: 24,
+    height: 24,
+  },
   deviceInfo: {
     flex: 1,
   },
@@ -1762,28 +1741,6 @@ deviceIconImage: {
     fontSize: 16,
     fontWeight: '500',
   },
-  connectButton: {
-    backgroundColor: globalStyles.primaryColor.color,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 5,
-    marginBottom: 10,
-    width: '100%',
-    alignItems: 'center',
-  },
-  connectButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  cancelButton: {
-    padding: 10,
-    marginTop: 10,
-  },
-  cancelButtonText: {
-    color: '#666',
-    fontSize: 16,
-  },
   filterOption: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1808,6 +1765,46 @@ deviceIconImage: {
     color: globalStyles.primaryColor.color,
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  cancelButton: {
+    padding: 10,
+    marginTop: 10,
+  },
+  cancelButtonText: {
+    color: '#666',
+    fontSize: 16,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    backgroundColor: globalStyles.primaryColor.color,
+    paddingVertical: SCREEN_HEIGHT * 0.01,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  activeTab: {
+    borderBottomWidth: 3,
+    borderBottomColor: '#fff',
+  },
+  tabText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  activeTabText: {
+    color: '#fff',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 10,
+  },
+  graphScrollContent: {
+    padding: 10,
   },
   graphHeader: {
     flexDirection: 'row',
@@ -1844,46 +1841,6 @@ deviceIconImage: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: '#333',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    backgroundColor: globalStyles.primaryColor.color,
-    paddingVertical: SCREEN_HEIGHT * 0.01,
-  },
-  tab: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  activeTab: {
-    borderBottomWidth: 3,
-    borderBottomColor: '#fff',
-  },
-  tabText: {
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  activeTabText: {
-    color: '#fff',
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 10,
   },
   dayBlock: {
     marginBottom: 15,
@@ -1960,9 +1917,6 @@ deviceIconImage: {
     borderWidth: 2,
     borderColor: '#2c80ff',
   },
-  graphScrollContent: {
-    padding: 10,
-  },
   graphCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -2029,6 +1983,17 @@ deviceIconImage: {
     fontWeight: 'normal',
     color: '#666',
   },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: '#333',
+  },
   toastContainer: {
     position: 'absolute',
     bottom: 50,
@@ -2044,4 +2009,82 @@ deviceIconImage: {
     fontSize: 14,
     textAlign: 'center',
   },
+  // Add these to your existing styles
+livePressureContainer: {
+  backgroundColor: '#f8f9fa',
+  padding: 16,
+  borderRadius: 12,
+  alignItems: 'center',
+  marginBottom: 16,
+  borderWidth: 2,
+  borderColor: '#e9ecef',
+},
+livePressureLabel: {
+  fontSize: 12,
+  fontWeight: '600',
+  color: '#6c757d',
+  marginBottom: 4,
+  letterSpacing: 1,
+},
+livePressureValue: {
+  fontSize: 32,
+  fontWeight: 'bold',
+  color: '#2c3e50',
+  marginBottom: 8,
+},
+pressureTrend: {
+  backgroundColor: '#e9ecef',
+  paddingHorizontal: 12,
+  paddingVertical: 4,
+  borderRadius: 20,
+},
+pressureTrendText: {
+  fontSize: 12,
+  fontWeight: '600',
+  color: '#495057',
+},
+finalResultContainer: {
+  backgroundColor: '#d4edda',
+  padding: 16,
+  borderRadius: 12,
+  alignItems: 'center',
+  marginBottom: 16,
+  borderWidth: 2,
+  borderColor: '#c3e6cb',
+},
+finalResultLabel: {
+  fontSize: 12,
+  fontWeight: '600',
+  color: '#155724',
+  marginBottom: 4,
+  letterSpacing: 1,
+},
+finalResultValue: {
+  fontSize: 28,
+  fontWeight: 'bold',
+  color: '#155724',
+},
+measurementDetails: {
+  backgroundColor: '#fff',
+  padding: 12,
+  borderRadius: 8,
+  borderWidth: 1,
+  borderColor: '#e9ecef',
+},
+detailRow: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 8,
+},
+detailLabel: {
+  fontWeight: '600',
+  color: '#6c757d',
+  fontSize: 14,
+},
+detailValue: {
+  color: '#2c3e50',
+  fontWeight: 'bold',
+  fontSize: 14,
+},
 });
