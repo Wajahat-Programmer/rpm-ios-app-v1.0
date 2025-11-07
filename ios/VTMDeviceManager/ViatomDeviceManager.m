@@ -273,14 +273,23 @@ RCT_EXPORT_MODULE();
         NSLog(@"[Viatom] Measurement started - Device initiated: YES");
     }
     // Measurement ended normally
-    else if (wasMeasuring && (status == VTMBPStatusBPMeasureEnd || 
-                             status == VTMBPStatusECGMeasureEnd ||
-                             status == VTMBPStatusBPMeasureEndBP3 ||
-                             status == VTMBPStatusECGMeasureEndBP3 ||
-                             status == VTMBPStatusBPAVGMeasureEnd)) {
-        [self cleanupMeasurement:YES reason:@"normal_completion"];
-        [self speak:@"Device Error : Measurement not completed please again start measuring"];
-    }
+// Measurement ended normally
+else if (wasMeasuring && (status == VTMBPStatusBPMeasureEnd || 
+                         status == VTMBPStatusECGMeasureEnd ||
+                         status == VTMBPStatusBPMeasureEndBP3 ||
+                         status == VTMBPStatusECGMeasureEndBP3 ||
+                         status == VTMBPStatusBPAVGMeasureEnd)) {
+    [self cleanupMeasurement:YES reason:@"normal_completion"];
+    [self speak:@"Measurement interrupted"]; // ← FIXED!
+    
+    // Give some time for the final result to come through
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.isWaitingForBPResult) {
+            NSLog(@"[Viatom] No result received after completion, requesting final data");
+            [self.viatomUtils requestBPRealData];
+        }
+    });
+}
     // Manual stop detected (device returned to ready state)
     else if (wasMeasuring && status == VTMBPStatusReady) {
         [self handleManualStop];
@@ -843,22 +852,31 @@ commandCompletion:(u_char)cmdType
             }
         }
 
-        if (n == 34 || n == 36 || n == 38 || n == 40 || n == 44) {
-            uint16_t sys=0,dia=0,mean=0,pulse=0;
-            if (vt_try_extract_result(response, &sys, &dia, &mean, &pulse)) {
-                [self sendEventWithName:@"onMeasurementResult" body:@{
-                  @"type": @"BP_RESULT",
-                  @"systolic": @(sys), @"diastolic": @(dia),
-                  @"meanPressure": @(mean), @"pulse": @(pulse),
-                  @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
-                }];
-                self.isWaitingForBPResult = NO;
-                [self.measurementTimeoutTimer invalidate];
-                self.measurementTimeoutTimer = nil;
-                [self exitBPMode];
-                return;
-            }
-        }
+if (n == 34 || n == 36 || n == 38 || n == 40 || n == 44) {
+    uint16_t sys=0,dia=0,mean=0,pulse=0;
+    if (vt_try_extract_result(response, &sys, &dia, &mean, &pulse)) {
+        NSLog(@"[Viatom] ✅ Final BP Result extracted: %d/%d mmHg, Pulse: %d", sys, dia, pulse);
+        
+        [self sendEventWithName:@"onMeasurementResult" body:@{
+          @"type": @"BP_RESULT",
+          @"systolic": @(sys), @"diastolic": @(dia),
+          @"meanPressure": @(mean), @"pulse": @(pulse),
+          @"timestamp": @((long long)([NSDate date].timeIntervalSince1970 * 1000))
+        }];
+        
+        self.isWaitingForBPResult = NO;
+        [self.measurementTimeoutTimer invalidate];
+        self.measurementTimeoutTimer = nil;
+        
+        // Speak success
+        [self speak:[NSString stringWithFormat:@"Measurement complete. Blood pressure %d over %d. Pulse %d.", sys, dia, pulse]];
+        
+        [self exitBPMode];
+        return;
+    } else {
+        NSLog(@"[Viatom] ❌ Could not extract valid result from %lu bytes", (unsigned long)n);
+    }
+}
 
         @try {
             VTMBPRealTimeData rt = [VTMBLEParser parseBPRealTimeData:response];
@@ -990,14 +1008,30 @@ commandCompletion:(u_char)cmdType
 - (void)forceExitAfterNoResult {
     self.lastResultWaitTimer = nil;
     if (self.isMeasurementInProgress) {
-        // Try one last fetch for result
-        [self.viatomUtils requestBPRealData];
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self.isMeasurementInProgress) {
-                [self handleMeasurementError:@"NO_RESULT" 
-                                     message:@"Measurement completed but no result received"];
+        NSLog(@"[Viatom] Force exit - no result received after completion");
+        
+        // Try multiple attempts to get the result
+        __block int attempt = 0;
+        __block NSTimer *retryTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                                      repeats:YES
+                                                                        block:^(NSTimer * _Nonnull timer) {
+            attempt++;
+            NSLog(@"[Viatom] Result retry attempt %d", attempt);
+            [self.viatomUtils requestBPRealData];
+            
+            if (attempt >= 3) {
+                [timer invalidate];
+                if (self.isMeasurementInProgress) {
+                    NSLog(@"[Viatom] Giving up after %d attempts", attempt);
+                    [self handleMeasurementError:@"NO_RESULT" 
+                                         message:@"Measurement completed but no result received after multiple attempts"];
+                }
             }
+        }];
+        
+        // Auto-stop the retry after 3 seconds
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [retryTimer invalidate];
         });
     }
 }

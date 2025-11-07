@@ -71,7 +71,7 @@ RCT_EXPORT_MODULE(ViatomO2Manager);
     _warmValidFrames = 0;
     _lastFrameTS = 0;
     _namePrefixes = @[@"outfit-wps", @"oxyfit-wps", @"Oxyfit", @"O2", @"O2M", @"O2Ring",
-                      @"Checkme", @"Viatom", @"PC-60", @"PC-68"];
+                      @"Checkme", @"Viatom", @"PC-60", @"PC-68", @"KS-60FWB"];
     _inRecoveryRescan = NO;
 
     // ---- NEW: load persisted settings

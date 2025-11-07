@@ -426,6 +426,10 @@ export default function BloodPressure({ navigation }) {
   const [isScanning, setIsScanning] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
+  // Add to your existing state management
+const [manualConnectionMode, setManualConnectionMode] = useState(false);
+const [selectedDevice, setSelectedDevice] = useState(null);
+  const [connectionVerified, setConnectionVerified] = useState(false);
   
   // Measurement State - Single source of truth
   const [measurementState, setMeasurementState] = useState({
@@ -444,6 +448,9 @@ export default function BloodPressure({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [deviceError, setDeviceError] = useState(null);
+
+  const [processedResults, setProcessedResults] = useState(new Set());
+const processingRef = useRef(false);
 
   // Refs
   const toastTimeoutRef = useRef(null);
@@ -502,6 +509,26 @@ export default function BloodPressure({ navigation }) {
       );
     }
   };
+
+  // Clean up old processed results to prevent memory leaks
+useEffect(() => {
+  const cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    setProcessedResults(prev => {
+      const updated = new Set();
+      // Keep only results from the last 5 minutes
+      prev.forEach(key => {
+        const timestamp = parseInt(key.split('_').pop());
+        if (now - timestamp < 5 * 60 * 1000) { // 5 minutes
+          updated.add(key);
+        }
+      });
+      return updated;
+    });
+  }, 60000); // Clean every minute
+
+  return () => clearInterval(cleanupInterval);
+}, []);
 
   // Historical Data Management
 const loadHistoricalData = async (days = 7) => {
@@ -577,15 +604,16 @@ useEffect(() => {
     }));
   };
 
-  const resetMeasurementState = () => {
-    setMeasurementState({
-      isMeasuring: false,
-      isDeviceInitiated: false,
-      hasError: false,
-      error: null
-    });
-    setRealTimeData(null);
-  };
+const resetMeasurementState = useCallback(() => {
+  setMeasurementState({
+    isMeasuring: false,
+    isDeviceInitiated: false,
+    hasError: false,
+    error: null
+  });
+  setRealTimeData(null);
+  // Don't reset processingRef here as we need it for deduplication
+}, []);
 
   // Safe Scan Management
   const safeStartScan = useCallback(() => {
@@ -612,107 +640,140 @@ useEffect(() => {
   };
 
   // Real-time Data Handler
-  const handleRealTimeData = (data) => {
-    if (!data || !data.type) return;
+// Deduplicated Real-time Data Handler
+const handleRealTimeData = useCallback((data) => {
+  if (!data || !data.type) return;
 
-    // Handle battery updates
-    if (data.type === 'BP_STATUS_UPDATE') {
-      console.log('[UI] Battery update received:', data);
-      if (typeof data.batteryLevel === 'number') {
-        setBatteryLevel(data.batteryLevel);
-        if (connectedDeviceRef.current) {
-          connectedDeviceRef.current.batteryLevel = data.batteryLevel;
-        }
+  // Handle battery updates
+  if (data.type === 'BP_STATUS_UPDATE') {
+    console.log('[UI] Battery update received:', data);
+    if (typeof data.batteryLevel === 'number') {
+      setBatteryLevel(data.batteryLevel);
+      if (connectedDeviceRef.current) {
+        connectedDeviceRef.current.batteryLevel = data.batteryLevel;
       }
+    }
+    return;
+  }
+
+  // Handle measurement progress
+  if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
+    const defl = !!data.isDeflating;
+    const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
+    const phase = data.phase || (defl ? 'deflating' : 'inflating');
+    
+    setRealTimeData({
+      type: 'BP_PROGRESS',
+      pressure: Number(data.pressure) || 0,
+      isDeflating: defl,
+      isInflating: infl,
+      phase,
+      hasPulse: !!data.hasPulse,
+      pulseRate: Number(data.pulseRate) || 0,
+    });
+
+    if (!defl && (data.pressure ?? 0) > 0) {
+      showToastMessage('Inflating...', 1000);
+    } else if (defl) {
+      showToastMessage('Deflating...', 1000);
+    }
+    return;
+  }
+
+  // Handle final measurement result - WITH DEDUPLICATION
+  if (data.type === 'BP') {
+    // Create a unique key for this result
+    const resultKey = `bp_${data.systolic}_${data.diastolic}_${data.pulse}_${Date.now()}`;
+    
+    // Check if we're already processing or have processed this result
+    if (processingRef.current || processedResults.has(resultKey)) {
+      console.log('🔄 Duplicate BP result detected, skipping:', resultKey);
       return;
     }
 
-    // Handle measurement progress
-    if (data.type === 'BP_PROGRESS' && typeof data.pressure === 'number') {
-      const defl = !!data.isDeflating;
-      const infl = typeof data.isInflating === 'boolean' ? !!data.isInflating : !defl;
-      const phase = data.phase || (defl ? 'deflating' : 'inflating');
-      
-      setRealTimeData({
-        type: 'BP_PROGRESS',
-        pressure: Number(data.pressure) || 0,
-        isDeflating: defl,
-        isInflating: infl,
-        phase,
-        hasPulse: !!data.hasPulse,
-        pulseRate: Number(data.pulseRate) || 0,
-      });
+    // Mark as processing
+    processingRef.current = true;
+    setProcessedResults(prev => new Set([...prev, resultKey]));
 
-      if (!defl && (data.pressure ?? 0) > 0) {
-        showToastMessage('Inflating...', 1000);
-      } else if (defl) {
-        showToastMessage('Deflating...', 1000);
-      }
-      return;
-    }
-
-    // Handle final measurement result
-    if (data.type === 'BP') {
-      resetMeasurementState();
-      const now = new Date();
-      const currentDevice = connectedDeviceRef.current;
-      
-      const newReading = {
-        id: Date.now(),
-        date: now.toLocaleDateString(),
-        time: now.toLocaleTimeString(),
-        systolic: Number(data.systolic),
-        diastolic: Number(data.diastolic),
-        bpm: Number(data.pulse),
-        mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
-        timestamp: now.toISOString(),
-        deviceName: currentDevice?.name,
-        deviceId: currentDevice?.id
-      };
-      
-      console.log('📝 Final reading with device:', { 
-        deviceName: currentDevice?.name, 
-        deviceId: currentDevice?.id 
+    console.log('📝 Processing final BP result:', data);
+    
+    resetMeasurementState();
+    const now = new Date();
+    const currentDevice = connectedDeviceRef.current;
+    
+    const newReading = {
+      id: Date.now(),
+      date: now.toLocaleDateString(),
+      time: now.toLocaleTimeString(),
+      systolic: Number(data.systolic),
+      diastolic: Number(data.diastolic),
+      bpm: Number(data.pulse),
+      mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
+      timestamp: now.toISOString(),
+      deviceName: currentDevice?.name,
+      deviceId: currentDevice?.id
+    };
+    
+    console.log('📤 Storing device data with battery:', newReading);
+    
+    // Store the data
+    storeMeasurementData(newReading)
+      .then(() => {
+        console.log('✅ Device data stored successfully');
+        showToastMessage(
+          `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
+          3000
+        );
+      })
+      .catch(error => {
+        console.error('❌ Failed to store device data:', error);
+      })
+      .finally(() => {
+        // Reset processing flag after a delay to prevent immediate duplicates
+        setTimeout(() => {
+          processingRef.current = false;
+        }, 2000);
       });
-      
-      storeMeasurementData(newReading);
-      showToastMessage(
-        `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
-        3000
-      );
-      
-      setRealTimeData({
-        type: 'BP',
-        systolic: newReading.systolic,
-        diastolic: newReading.diastolic,
-        pulse: newReading.bpm,
-        mean: newReading.mean,
-      });
-      return;
-    }
-  };
+    
+    setRealTimeData({
+      type: 'BP',
+      systolic: newReading.systolic,
+      diastolic: newReading.diastolic,
+      pulse: newReading.bpm,
+      mean: newReading.mean,
+    });
+    
+    return;
+  }
+}, [processedResults]);
 
   // Event Subscriptions
   useEffect(() => {
     loadHistoricalData(7);
 
-    const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
-      console.log('[BLE] Discovered:', device);
-      setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
-    });
+const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovered', (device) => {
+  console.log('[BLE] Discovered:', device);
+  const deviceWithSaved = {
+    ...device,
+    saved: device.saved || false // Add saved flag from native side
+  };
+  setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, deviceWithSaved]));
+});
 
+// Replace your current connectionSubscription in useEffect
 // Replace your current connectionSubscription in useEffect
 const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
   console.log('[BLE] Connected:', device);
   
   const deviceInfo = {
-    name: device.name || 'BP2A 2943',
+   name: device.name || 'Unknown Device',
     id: device.id,
     batteryLevel: batteryLevel
   };
   
   setConnectedDevice(deviceInfo);
   connectedDeviceRef.current = deviceInfo;
+  setConnectionVerified(true); // Mark connection as verified
   console.log('💾 Stored device in ref:', connectedDeviceRef.current);
   
   ViatomDeviceManager.requestDeviceInfo?.();
@@ -728,6 +789,7 @@ const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisco
   console.log('[BLE] Disconnected:', payload);
   setConnectedDevice(null);
   connectedDeviceRef.current = null;
+  setConnectionVerified(true); // Mark disconnection as verified
   resetMeasurementState();
   
   // Force UI update
@@ -741,33 +803,45 @@ const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisco
       handleRealTimeData(data);
     });
 
-    const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
-      if (evt?.type !== 'BP_RESULT') return;
-      console.log('[BP] Final Result received:', evt);
+const resultSubscription = ViatomDeviceManager.addListener('onMeasurementResult', (evt) => {
+  if (evt?.type !== 'BP_RESULT') return;
+  
+  console.log('[BP] Final Result received:', evt);
 
-      resetMeasurementState();
-      const now = new Date();
-      const currentDevice = connectedDeviceRef.current;
-      
-      const newReading = {
-        id: Date.now(),
-        date: now.toLocaleDateString(),
-        time: now.toLocaleTimeString(),
-        systolic: Number(evt.systolic),
-        diastolic: Number(evt.diastolic),
-        bpm: Number(evt.pulse),
-        mean: Number(evt.meanPressure),
-        timestamp: now.toISOString(),
-        deviceName: currentDevice?.name,
-        deviceId: currentDevice?.id
-      };
-      
-      console.log('📝 Final reading with device:', { 
-        deviceName: currentDevice?.name, 
-        deviceId: currentDevice?.id 
-      });
-      
-      storeMeasurementData(newReading);
+  // Create unique key for this result
+  const resultKey = `result_${evt.systolic}_${evt.diastolic}_${evt.pulse}_${Date.now()}`;
+  
+  // Check for duplicates
+  if (processingRef.current || processedResults.has(resultKey)) {
+    console.log('🔄 Duplicate onMeasurementResult detected, skipping:', resultKey);
+    return;
+  }
+
+  processingRef.current = true;
+  setProcessedResults(prev => new Set([...prev, resultKey]));
+
+  resetMeasurementState();
+  const now = new Date();
+  const currentDevice = connectedDeviceRef.current;
+  
+  const newReading = {
+    id: Date.now(),
+    date: now.toLocaleDateString(),
+    time: now.toLocaleTimeString(),
+    systolic: Number(evt.systolic),
+    diastolic: Number(evt.diastolic),
+    bpm: Number(evt.pulse),
+    mean: Number(evt.meanPressure),
+    timestamp: now.toISOString(),
+    deviceName: currentDevice?.name,
+    deviceId: currentDevice?.id
+  };
+  
+  console.log('📝 Final reading from onMeasurementResult:', newReading);
+  
+  storeMeasurementData(newReading)
+    .then(() => {
+      console.log('✅ Device data stored from onMeasurementResult');
       setRealTimeData({
         type: 'BP',
         systolic: newReading.systolic,
@@ -781,7 +855,16 @@ const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisco
         `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
         3000
       );
+    })
+    .catch(error => {
+      console.error('❌ Failed to store device data from onMeasurementResult:', error);
+    })
+    .finally(() => {
+      setTimeout(() => {
+        processingRef.current = false;
+      }, 2000);
     });
+});
 
     const statusSubscription = ViatomDeviceManager.addListener('onBPStatusChanged', (payload) => {
       console.log('[BP] Status:', payload);
@@ -865,34 +948,98 @@ const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisco
     };
   }, []);
 
+
+  
+
   // Screen Focus Management
-  useFocusEffect(
-    useCallback(() => {
-      console.log('[BP] Screen focused, checking connection state');
-      
-      ViatomDeviceManager.enableAutoReconnect?.(true);
-      
-      if (!connectedDevice) {
-        console.log('[BP] No connected device, starting scan');
-        safeStartScan();
-        
-        const scanTimeout = setTimeout(() => {
-          if (!connectedDevice) {
-            console.log('[BP] Extended scan complete, stopping');
-            ViatomDeviceManager.stopScan?.();
+// Screen Focus Management
+useFocusEffect(
+  useCallback(() => {
+    console.log('[BP] Screen focused, checking connection state');
+
+    // Reset connection verification on fresh start
+    if (!connectionVerified) {
+      console.log('[BP] Fresh start - resetting connection state');
+      setConnectedDevice(null);
+      connectedDeviceRef.current = null;
+    }
+
+    ViatomDeviceManager.enableAutoReconnect?.(true);
+
+    if (!connectedDevice) {
+      console.log('[BP] No connected device, starting scan');
+      safeStartScan();
+
+      // ⏳ 3-second timeout for fallback to manual connect
+      const connectionTimeout = setTimeout(() => {
+        if (!connectedDevice) {
+          console.log('[BP] Connection timeout - reverting to manual mode');
+          ViatomDeviceManager.stopScan?.();
+
+          // 🧩 Explicitly reset UI state
+          setConnectedDevice(null);
+          connectedDeviceRef.current = null;
+          setConnectionVerified(false);
+
+          // 🖐 open manual connect modal
+          setShowDeviceModal(true);
+
+          // 🗨 notify user
+          showToastMessage('Device not found. Please connect manually.');
+        }
+      }, 3000); // 3 sec
+
+      // ⏱️ 15-second safety timeout for long scans
+      const scanTimeout = setTimeout(() => {
+        if (!connectedDevice) {
+          console.log('[BP] Extended scan complete, stopping');
+          ViatomDeviceManager.stopScan?.();
+          if (!connectionVerified) {
+            setConnectionVerified(true);
           }
-        }, 15000);
-        
-        return () => clearTimeout(scanTimeout);
-      } else {
-        console.log('[BP] Device already connected:', connectedDevice.name);
-      }
-      
+        }
+      }, 15000);
+
       return () => {
-        console.log('[BP] Screen unfocused - keeping background connection');
+        clearTimeout(scanTimeout);
+        clearTimeout(connectionTimeout);
       };
-    }, [connectedDevice, safeStartScan])
-  );
+    } else {
+      console.log('[BP] Device already connected:', connectedDevice.name);
+      setConnectionVerified(true);
+    }
+
+    return () => {
+      console.log('[BP] Screen unfocused - keeping background connection');
+    };
+  }, [connectedDevice, safeStartScan, connectionVerified])
+);
+
+
+
+// Add this useEffect to verify connection state on component mount
+useEffect(() => {
+  // Initial connection state verification
+  const verifyInitialConnectionState = async () => {
+    console.log('[BP] Verifying initial connection state...');
+    
+    // Start with disconnected state
+    setConnectedDevice(null);
+    connectedDeviceRef.current = null;
+    
+    // Small delay to ensure Bluetooth stack is ready
+    setTimeout(() => {
+      // If we don't have a verified connection after 2 seconds, 
+      // assume we're actually disconnected
+      if (!connectionVerified) {
+        console.log('[BP] No connection verified, assuming disconnected state');
+        setConnectionVerified(true);
+      }
+    }, 2000);
+  };
+
+  verifyInitialConnectionState();
+}, []);
 
   // Scanning Management
   const startScanning = () => {
@@ -940,30 +1087,74 @@ const disconnectionSubscription = ViatomDeviceManager.addListener('onDeviceDisco
   };
 
   // Connection Status Component
-  const renderConnectionStatus = () => (
+// Enhanced Connection Status Component
+// Enhanced Connection Status Component with proper state handling
+const renderConnectionStatus = () => {
+  // Show connecting state when we're actively trying to connect
+  const isConnecting = !connectedDevice && connectionVerified && devices.length > 0;
+  
+  return (
     <View style={styles.deviceRow}>
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         <Image
           source={require('./assets/device_bp.png')}
-          style={[styles.deviceImage, { borderColor: globalStyles.primaryColor.color }]}
+          style={[
+            styles.deviceImage, 
+            { 
+              borderColor: connectedDevice ? globalStyles.primaryColor.color : 
+                           isConnecting ? '#ffa726' : '#ccc',
+              opacity: connectedDevice ? 1 : 0.6
+            }
+          ]}
           resizeMode="contain"
         />
         
         <View>
-          <Text style={styles.deviceName}>{connectedDevice?.name || 'Blood Pressure Monitor'}</Text>
-          <Text style={[styles.connectedText, { color: globalStyles.primaryColor.color }]}>
-            {connectedDevice ? 'Connected' : 'Disconnected'}
+          <Text style={styles.deviceName}>
+            {connectedDevice?.name || 'Blood Pressure Monitor'}
+          </Text>
+          <Text style={[
+            styles.connectedText, 
+            { 
+              color: connectedDevice ? globalStyles.primaryColor.color : 
+                     isConnecting ? '#ffa726' : '#666'
+            }
+          ]}>
+            {connectedDevice ? 'Connected' : 
+             isConnecting ? 'Connecting...' : 'Disconnected'}
           </Text>
         </View>
       </View>
       
-      {batteryLevel !== null && (
-        <View style={[styles.batteryPill, { borderColor: '#E5E7EB' }]}>
-          <Text style={styles.batteryText}>{batteryLevel}%</Text>
-        </View>
-      )}
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        {batteryLevel !== null && connectedDevice && (
+          <View style={[styles.batteryPill, { borderColor: '#E5E7EB', marginRight: 10 }]}>
+            <Text style={styles.batteryText}>{batteryLevel}%</Text>
+          </View>
+        )}
+        
+        <TouchableOpacity 
+          style={[
+            styles.connectButton,
+            connectedDevice ? styles.disconnectButtonStyle : 
+            isConnecting ? styles.connectingButtonStyle : styles.connectButtonStyle
+          ]}
+          onPress={connectedDevice ? disconnectDevice : () => setShowDeviceModal(true)}
+          disabled={isConnecting}
+        >
+          <Text style={[
+            styles.connectButtonText,
+            connectedDevice ? styles.disconnectButtonTextStyle : 
+            isConnecting ? styles.connectingButtonTextStyle : styles.connectButtonTextStyle
+          ]}>
+            {connectedDevice ? 'Disconnect' : 
+             isConnecting ? 'Connecting...' : 'Connect'}
+          </Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
+};
 
   // Device Controls Component
   const renderDeviceControls = () => (
@@ -1084,99 +1275,184 @@ const renderRealTimeData = () => {
 };
 
   // Device Connection Modal
-  const renderDeviceConnectionModal = () => (
-    <Modal
-      visible={showDeviceModal}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setShowDeviceModal(false)}
-      onShow={() => {
-        if (!connectedDevice) startScanning();
-      }}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>Connect to BP Device</Text>
+// Enhanced Device Connection Modal with Manual Controls
+const renderDeviceConnectionModal = () => (
+  <Modal
+    visible={showDeviceModal}
+    transparent
+    animationType="fade"
+    onRequestClose={() => {
+      setShowDeviceModal(false);
+      setManualConnectionMode(false);
+      setSelectedDevice(null);
+      if (isScanning) stopScanning();
+    }}
+    onShow={() => {
+      if (!connectedDevice) startScanning();
+    }}
+  >
+    <View style={styles.modalOverlay}>
+      <View style={styles.modalCard}>
+        <Text style={styles.modalTitle}>
+          {manualConnectionMode ? 'Select Device to Connect' : 'Connect to BP Device'}
+        </Text>
 
-          {isLoading ? (
-            <View style={{ alignItems: 'center', padding: 20 }}>
-              <ActivityIndicator size="large" color={globalStyles.primaryColor.color} />
-              <Text style={{ marginTop: 10, color: '#666' }}>Connecting...</Text>
+        {connectedDevice ? (
+          <View style={styles.connectedStatusContainer}>
+            <View style={styles.connectedIcon}>
+              <Text style={styles.connectedIconText}>✓</Text>
             </View>
-          ) : (
-            <>
-              <Text style={styles.modalSubtitle}>
-                {connectedDevice
-                  ? 'Connected to Device'
-                  : isScanning
-                  ? 'Scanning for devices...'
-                  : 'Select a device to connect'}
-              </Text>
+            <Text style={styles.connectedStatusText}>
+              Connected to {connectedDevice.name}
+            </Text>
+            <TouchableOpacity 
+              style={styles.disconnectButton}
+              onPress={disconnectDevice}
+            >
+              <Text style={styles.disconnectButtonText}>Disconnect</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.modalSubtitle}>
+              {isScanning 
+                ? 'Scanning for devices...' 
+                : manualConnectionMode
+                ? 'Select a device to connect manually'
+                : 'Auto-connect is enabled for saved devices'}
+            </Text>
 
-              {!connectedDevice && (
-                <>
-                  <ScrollView style={styles.deviceList} showsVerticalScrollIndicator={false}>
-                    {devices.length === 0 ? (
-                      <View style={styles.noDevicesContainer}>
-                        <Text style={styles.noDevicesText}>
-                          {isScanning ? 'Scanning for devices...' : 'No devices found. Tap "Scan" to search.'}
-                        </Text>
-                      </View>
-                    ) : (
-                      devices.map((d, idx) => (
-                        <TouchableOpacity
-                          key={`${d.id ?? idx}`}
-                          style={styles.deviceItem}
-                          onPress={() => connectToDevice(d.id)}
-                        >
-                          <View style={styles.deviceIcon}>
-                            <Image 
-                              source={require('./assets/device_bp.png')} 
-                              style={styles.deviceIconImage}
-                              resizeMode="contain"
-                            />
-                          </View>
-                          <View style={styles.deviceInfo}>
-                            <Text style={styles.deviceName}>{d.name ?? 'Unknown Device'}</Text>
-                            {d.id && <Text style={styles.deviceId}>{d.id}</Text>}
-                          </View>
-                          <View style={styles.connectIndicator}>
-                            <Text style={styles.connectIndicatorText}>Connect</Text>
-                          </View>
-                        </TouchableOpacity>
-                      ))
-                    )}
-                  </ScrollView>
-
-                  <View style={styles.modalButtons}>
-                    {!isScanning ? (
-                      <TouchableOpacity style={styles.primaryButton} onPress={startScanning}>
-                        <Text style={styles.primaryButtonText}>Scan for Devices</Text>
-                      </TouchableOpacity>
-                    ) : (
-                      <TouchableOpacity style={styles.secondaryButton} onPress={stopScanning}>
-                        <Text style={styles.secondaryButtonText}>Stop Scanning</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </>
-              )}
-
+            {/* Manual Connection Toggle */}
+            <View style={styles.manualToggleContainer}>
+              <Text style={styles.manualToggleLabel}>Manual Connection</Text>
               <TouchableOpacity
-                style={styles.closeButton}
+                style={[
+                  styles.toggleSwitch,
+                  manualConnectionMode && styles.toggleSwitchActive
+                ]}
                 onPress={() => {
-                  setShowDeviceModal(false);
-                  if (isScanning) stopScanning();
+                  const newMode = !manualConnectionMode;
+                  setManualConnectionMode(newMode);
+                  if (newMode && !isScanning) {
+                    startScanning();
+                  }
                 }}
               >
-                <Text style={styles.closeButtonText}>Close</Text>
+                <View style={[
+                  styles.toggleKnob,
+                  manualConnectionMode && styles.toggleKnobActive
+                ]} />
               </TouchableOpacity>
-            </>
-          )}
-        </View>
+            </View>
+
+            <ScrollView style={styles.deviceList} showsVerticalScrollIndicator={false}>
+              {devices.length === 0 ? (
+                <View style={styles.noDevicesContainer}>
+                  <Text style={styles.noDevicesText}>
+                    {isScanning 
+                      ? 'Scanning for devices...' 
+                      : 'No devices found. Tap "Scan" to search.'}
+                  </Text>
+                </View>
+              ) : (
+                devices.map((d, idx) => (
+                  <TouchableOpacity
+                    key={`${d.id ?? idx}`}
+                    style={[
+                      styles.deviceItem,
+                      selectedDevice?.id === d.id && styles.deviceItemSelected
+                    ]}
+                    onPress={() => {
+                      if (manualConnectionMode) {
+                        setSelectedDevice(d);
+                      } else {
+                        connectToDevice(d.id);
+                      }
+                    }}
+                  >
+                    <View style={styles.deviceIcon}>
+                      <Image 
+                        source={require('./assets/device_bp.png')} 
+                        style={styles.deviceIconImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <View style={styles.deviceInfo}>
+                      <Text style={styles.deviceName}>{d.name ?? 'Unknown Device'}</Text>
+                      {d.id && <Text style={styles.deviceId}>{d.id}</Text>}
+                      {d.saved && <Text style={styles.savedDeviceBadge}>Saved Device</Text>}
+                    </View>
+                    <View style={[
+                      styles.connectIndicator,
+                      manualConnectionMode && selectedDevice?.id === d.id && styles.connectIndicatorSelected
+                    ]}>
+                      <Text style={styles.connectIndicatorText}>
+                        {manualConnectionMode 
+                          ? selectedDevice?.id === d.id ? 'Selected' : 'Select'
+                          : 'Connect'
+                        }
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={styles.modalButtons}>
+              {manualConnectionMode ? (
+                <>
+                  {selectedDevice && (
+                    <TouchableOpacity 
+                      style={styles.primaryButton} 
+                      onPress={() => connectToDevice(selectedDevice.id)}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        Connect to {selectedDevice.name}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  {!isScanning ? (
+                    <TouchableOpacity style={styles.secondaryButton} onPress={startScanning}>
+                      <Text style={styles.secondaryButtonText}>Scan for Devices</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity style={styles.secondaryButton} onPress={stopScanning}>
+                      <Text style={styles.secondaryButtonText}>Stop Scanning</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
+              ) : (
+                <>
+                  {!isScanning ? (
+                    <TouchableOpacity style={styles.primaryButton} onPress={startScanning}>
+                      <Text style={styles.primaryButtonText}>Scan for Devices</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity style={styles.secondaryButton} onPress={stopScanning}>
+                      <Text style={styles.secondaryButtonText}>Stop Scanning</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
+              )}
+            </View>
+          </>
+        )}
+
+        <TouchableOpacity
+          style={styles.closeButton}
+          onPress={() => {
+            setShowDeviceModal(false);
+            setManualConnectionMode(false);
+            setSelectedDevice(null);
+            if (isScanning) stopScanning();
+          }}
+        >
+          <Text style={styles.closeButtonText}>Close</Text>
+        </TouchableOpacity>
       </View>
-    </Modal>
-  );
+    </View>
+  </Modal>
+);
 
   // Filter Modal
   const renderFilterModal = () => (
@@ -2086,5 +2362,126 @@ detailValue: {
   color: '#2c3e50',
   fontWeight: 'bold',
   fontSize: 14,
+},
+// Add to your existing styles
+manualToggleContainer: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  paddingVertical: 12,
+  paddingHorizontal: 16,
+  backgroundColor: '#f8f9fa',
+  borderRadius: 8,
+  marginBottom: 16,
+},
+manualToggleLabel: {
+  fontSize: 16,
+  fontWeight: '600',
+  color: '#333',
+},
+toggleSwitch: {
+  width: 50,
+  height: 28,
+  borderRadius: 14,
+  backgroundColor: '#e9ecef',
+  padding: 2,
+  justifyContent: 'center',
+},
+toggleSwitchActive: {
+  backgroundColor: globalStyles.primaryColor.color,
+},
+toggleKnob: {
+  width: 24,
+  height: 24,
+  borderRadius: 12,
+  backgroundColor: '#fff',
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 1 },
+  shadowOpacity: 0.2,
+  shadowRadius: 1,
+  elevation: 2,
+},
+toggleKnobActive: {
+  transform: [{ translateX: 22 }],
+},
+deviceItemSelected: {
+  backgroundColor: '#e3f2fd',
+  borderColor: globalStyles.primaryColor.color,
+  borderWidth: 1,
+},
+connectIndicatorSelected: {
+  backgroundColor: '#4caf50',
+},
+connectedStatusContainer: {
+  alignItems: 'center',
+  padding: 20,
+},
+connectedIcon: {
+  width: 60,
+  height: 60,
+  borderRadius: 30,
+  backgroundColor: '#4caf50',
+  justifyContent: 'center',
+  alignItems: 'center',
+  marginBottom: 12,
+},
+connectedIconText: {
+  color: '#fff',
+  fontSize: 24,
+  fontWeight: 'bold',
+},
+connectedStatusText: {
+  fontSize: 18,
+  fontWeight: '600',
+  color: '#333',
+  marginBottom: 16,
+  textAlign: 'center',
+},
+savedDeviceBadge: {
+  fontSize: 10,
+  color: globalStyles.primaryColor.color,
+  fontWeight: '600',
+  marginTop: 2,
+},
+connectButton: {
+  paddingHorizontal: 16,
+  paddingVertical: 8,
+  borderRadius: 20,
+  minWidth: 100,
+  alignItems: 'center',
+},
+connectButtonStyle: {
+  backgroundColor: globalStyles.primaryColor.color,
+},
+disconnectButtonStyle: {
+  backgroundColor: '#ff4444',
+},
+connectButtonText: {
+  fontSize: 14,
+  fontWeight: '600',
+},
+connectButtonTextStyle: {
+  color: '#fff',
+},
+disconnectButtonTextStyle: {
+  color: '#fff',
+},
+disconnectButton: {
+  backgroundColor: '#ff4444',
+  paddingHorizontal: 20,
+  paddingVertical: 10,
+  borderRadius: 8,
+  marginTop: 8,
+},
+disconnectButtonText: {
+  color: '#fff',
+  fontWeight: '600',
+},
+// Add to your existing styles
+connectingButtonStyle: {
+  backgroundColor: '#ffa726',
+},
+connectingButtonTextStyle: {
+  color: '#fff',
 },
 });
