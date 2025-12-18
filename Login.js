@@ -138,133 +138,72 @@ export default function Login({ navigation }) {
   };
 
   const performAutoLogin = async () => {
-  try {
-    const storedEmail = await AsyncStorage.getItem('biometric_email');
-    const storedPassword = await AsyncStorage.getItem('biometric_password');
-    
-    if (storedEmail && storedPassword) {
-      setIsLoading(true);
+    try {
+      const storedEmail = await AsyncStorage.getItem('biometric_email');
+      const storedPassword = await AsyncStorage.getItem('biometric_password');
       
-      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          identifier: storedEmail,
-          password: storedPassword,
-          method: 'email',
-          login_method: 'biometric' // ← ADD THIS LINE
-        }),
-      });
-
-      const text = await response.text();
-      console.log("Auto login response:", text);
-
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        console.error('Failed to parse JSON:', e);
-        setShowManualLogin(true);
-        animateFormIn();
-        return;
-      }
-
-      if (response.ok && data.requiresOtp) {
-        setShowOtpModal(true);
-      } else if (response.ok && data.token) {
-        const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
-        const accessToken = cookies?.token?.value;
-        const refreshToken = cookies?.refresh_token?.value;
+      if (storedEmail && storedPassword) {
+        setIsLoading(true);
         
-        if (accessToken && refreshToken) {
-          await AsyncStorage.setItem('token', accessToken);
-          await AsyncStorage.setItem('refreshToken', refreshToken);
+        // Determine login method based on stored identifier
+        const method = storedEmail.includes('@') ? 'email' : 'username';
+        
+        const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            identifier: storedEmail,
+            password: storedPassword,
+            method: method,
+            login_method: 'biometric'
+          }),
+        });
+
+        const text = await response.text();
+        console.log("Auto login response:", text);
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.error('Failed to parse JSON:', e);
+          setShowManualLogin(true);
+          animateFormIn();
+          return;
         }
-        
-        navigation.replace('Home');
+
+        if (response.ok && data.requiresOtp) {
+          setShowOtpModal(true);
+        } else if (response.ok && data.token) {
+          const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
+          const accessToken = cookies?.token?.value;
+          const refreshToken = cookies?.refresh_token?.value;
+          
+          if (accessToken && refreshToken) {
+            await AsyncStorage.setItem('token', accessToken);
+            await AsyncStorage.setItem('refreshToken', refreshToken);
+          }
+          
+          navigation.replace('Home');
+        } else {
+          // Login failed, show manual form
+          setShowManualLogin(true);
+          animateFormIn();
+        }
       } else {
-        // Login failed, show manual form
+        // No stored credentials, show manual form
         setShowManualLogin(true);
         animateFormIn();
       }
-    } else {
-      // No stored credentials, show manual form
+    } catch (error) {
+      console.error('Auto login error:', error);
       setShowManualLogin(true);
       animateFormIn();
+    } finally {
+      setIsLoading(false);
     }
-  } catch (error) {
-    console.error('Auto login error:', error);
-    setShowManualLogin(true);
-    animateFormIn();
-  } finally {
-    setIsLoading(false);
-  }
-};
-
-  // const performAutoLogin = async () => {
-  //   try {
-  //     const storedEmail = await AsyncStorage.getItem('biometric_email');
-  //     const storedPassword = await AsyncStorage.getItem('biometric_password');
-      
-  //     if (storedEmail && storedPassword) {
-  //       setIsLoading(true);
-        
-  //       const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
-  //         method: 'POST',
-  //         headers: { 'Content-Type': 'application/json' },
-  //         credentials: 'include',
-  //         body: JSON.stringify({
-  //           identifier: storedEmail,
-  //           password: storedPassword,
-  //           method: 'email',
-  //         }),
-  //       });
-
-  //       const text = await response.text();
-  //       console.log("Auto login response:", text);
-
-  //       let data;
-  //       try {
-  //         data = JSON.parse(text);
-  //       } catch (e) {
-  //         console.error('Failed to parse JSON:', e);
-  //         setShowManualLogin(true);
-  //         animateFormIn();
-  //         return;
-  //       }
-
-  //       if (response.ok && data.requiresOtp) {
-  //         setShowOtpModal(true);
-  //       } else if (response.ok && data.token) {
-  //         const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
-  //         const accessToken = cookies?.token?.value;
-  //         const refreshToken = cookies?.refresh_token?.value;
-          
-  //         if (accessToken && refreshToken) {
-  //           await AsyncStorage.setItem('token', accessToken);
-  //           await AsyncStorage.setItem('refreshToken', refreshToken);
-  //         }
-          
-  //         navigation.replace('Home');
-  //       } else {
-  //         // Login failed, show manual form
-  //         setShowManualLogin(true);
-  //         animateFormIn();
-  //       }
-  //     } else {
-  //       // No stored credentials, show manual form
-  //       setShowManualLogin(true);
-  //       animateFormIn();
-  //     }
-  //   } catch (error) {
-  //     console.error('Auto login error:', error);
-  //     setShowManualLogin(true);
-  //     animateFormIn();
-  //   } finally {
-  //     setIsLoading(false);
-  //   }
-  // };
+  };
 
   const storeCredentialsForBiometric = async (userEmail, userPassword) => {
     try {
@@ -308,81 +247,249 @@ export default function Login({ navigation }) {
     }
   };
 
-  const performLogin = async (userEmail, userPassword) => {
-    setIsLoading(true);
-    setError('');
+  const performLogin = async (userIdentifier, userPassword) => {
+  setIsLoading(true);
+  setError('');
+
+  // Clear any previous network state
+  let response = null;
+  let text = null;
+
+  try {
+    // Determine if identifier is email or username
+    const method = userIdentifier.includes('@') ? 'email' : 'username';
+
+    // Add timeout and retry logic
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
     try {
-      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
+      response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         credentials: 'include',
+        signal: controller.signal,
         body: JSON.stringify({
-          identifier: userEmail,
+          identifier: userIdentifier,
           password: userPassword,
-          method: 'email',
+          method: method,
         }),
       });
-
-      const text = await response.text();
-      console.log("Raw login response:", text);
-
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        console.error('Failed to parse JSON:', e);
-        setError('Server returned invalid response');
-        return;
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      
+      if (fetchError.name === 'AbortError') {
+        throw new Error('Request timeout. Please check your internet connection.');
+      } else if (fetchError.message.includes('Network request failed')) {
+        throw new Error('Network error. Please check your internet connection and try again.');
+      } else {
+        throw fetchError;
       }
+    }
+    
+    clearTimeout(timeoutId);
 
-      if (response.ok && data.requiresOtp) {
-        console.log('OTP flow started');
-        setShowOtpModal(true);
-      } else if (response.ok && data.token) {
-        console.log('Login successful, saving tokens');
+    // Check if we got a response at all
+    if (!response) {
+      throw new Error('No response from server. Please check your connection.');
+    }
+
+    // Log response status for debugging
+    console.log(`Response status: ${response.status}`);
+    console.log(`Response headers:`, Object.fromEntries(response.headers.entries()));
+
+    text = await response.text();
+    console.log("Raw login response:", text.substring(0, 500)); // Limit log size
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      console.error('Failed to parse JSON:', e);
+      console.error('Raw text that failed to parse:', text);
+      
+      // Check if it's an HTML page (server error page)
+      if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+        throw new Error('Server returned an error page. Please try again later.');
+      }
+      
+      throw new Error('Server returned invalid response. Please try again.');
+    }
+
+    if (response.ok && data.requiresOtp) {
+      console.log('OTP flow started');
+      setShowOtpModal(true);
+    } else if (response.ok && data.token) {
+      console.log('Login successful, saving tokens');
+      
+      // Try to get cookies with error handling
+      try {
         const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
-        const accessToken = cookies?.token?.value;
-        const refreshToken = cookies?.refresh_token?.value;
+        console.log('Cookies retrieved:', cookies ? 'Yes' : 'No');
         
-        if (accessToken && refreshToken) {
+        const accessToken = cookies?.token?.value || data.token;
+        const refreshToken = cookies?.refresh_token?.value || data.refreshToken;
+        
+        if (accessToken) {
           await AsyncStorage.setItem('token', accessToken);
-          await AsyncStorage.setItem('refreshToken', refreshToken);
+          console.log('Token saved to AsyncStorage');
         }
         
-        // Ask user if they want to enable Face ID for future logins
-        if (isBiometricSupported && !hasBiometricCredentials) {
-          Alert.alert(
-            'Enable Face ID?',
-            'Do you want to enable Face ID for faster login in the future?',
-            [
-              {
-                text: 'Not Now',
-                style: 'cancel',
-                onPress: () => navigation.replace('Home')
-              },
-              {
-                text: 'Enable',
-                onPress: async () => {
-                  await storeCredentialsForBiometric(userEmail, userPassword);
-                  navigation.replace('Home');
-                }
-              }
-            ]
-          );
-        } else {
-          navigation.replace('Home');
+        if (refreshToken) {
+          await AsyncStorage.setItem('refreshToken', refreshToken);
+          console.log('Refresh token saved to AsyncStorage');
         }
+      } catch (cookieError) {
+        console.error('Cookie error:', cookieError);
+        // Still proceed with login if we have the token from response
+        if (data.token) {
+          await AsyncStorage.setItem('token', data.token);
+        }
+      }
+      
+      // Ask user if they want to enable Face ID for future logins
+      if (isBiometricSupported && !hasBiometricCredentials) {
+        Alert.alert(
+          'Enable Face ID?',
+          'Do you want to enable Face ID for faster login in the future?',
+          [
+            {
+              text: 'Not Now',
+              style: 'cancel',
+              onPress: () => navigation.replace('Home')
+            },
+            {
+              text: 'Enable',
+              onPress: async () => {
+                await storeCredentialsForBiometric(userIdentifier, userPassword);
+                navigation.replace('Home');
+              }
+            }
+          ]
+        );
+      } else {
+        navigation.replace('Home');
+      }
+    } else {
+      // Handle different error scenarios
+      if (response.status === 401) {
+        setError(data.message || 'Invalid credentials. Please check your email/username and password.');
+      } else if (response.status === 500) {
+        setError('Server error. Please try again later.');
+      } else if (response.status === 404) {
+        setError('Service not available. Please try again later.');
       } else {
         setError(data.message || 'Login failed. Please try again.');
       }
-    } catch (error) {
-      console.error('Login error:', error);
-      setError('Network error. Please check your connection and try again.');
-    } finally {
-      setIsLoading(false);
+      
+      // Log the error for debugging
+      console.error('Login failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        data: data
+      });
     }
-  };
+  } catch (error) {
+    console.error('Login error:', error);
+    
+    // More specific error messages
+    if (error.message.includes('timeout')) {
+      setError('Request timeout. Please check your internet connection and try again.');
+    } else if (error.message.includes('Network error')) {
+      setError('Network error. Please check your internet connection and try again.');
+    } else if (error.message.includes('Failed to fetch')) {
+      setError('Cannot connect to server. Please check your internet connection.');
+    } else if (error.message.includes('SSL')) {
+      setError('Secure connection failed. Please check your date/time settings.');
+    } else {
+      setError(error.message || 'An unexpected error occurred. Please try again.');
+    }
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+  // const performLogin = async (userIdentifier, userPassword) => {
+  //   setIsLoading(true);
+  //   setError('');
+
+  //   try {
+  //     // Determine if identifier is email or username
+  //     const method = userIdentifier.includes('@') ? 'email' : 'username';
+
+  //     const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/login', {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       credentials: 'include',
+  //       body: JSON.stringify({
+  //         identifier: userIdentifier,
+  //         password: userPassword,
+  //         method: method,
+  //       }),
+  //     });
+
+  //     const text = await response.text();
+  //     console.log("Raw login response:", text);
+
+  //     let data;
+  //     try {
+  //       data = JSON.parse(text);
+  //     } catch (e) {
+  //       console.error('Failed to parse JSON:', e);
+  //       setError('Server returned invalid response');
+  //       return;
+  //     }
+
+  //     if (response.ok && data.requiresOtp) {
+  //       console.log('OTP flow started');
+  //       setShowOtpModal(true);
+  //     } else if (response.ok && data.token) {
+  //       console.log('Login successful, saving tokens');
+  //       const cookies = await CookieManager.get('https://rmtrpm.duckdns.org/rpm-be');
+  //       const accessToken = cookies?.token?.value;
+  //       const refreshToken = cookies?.refresh_token?.value;
+        
+  //       if (accessToken && refreshToken) {
+  //         await AsyncStorage.setItem('token', accessToken);
+  //         await AsyncStorage.setItem('refreshToken', refreshToken);
+  //       }
+        
+  //       // Ask user if they want to enable Face ID for future logins
+  //       if (isBiometricSupported && !hasBiometricCredentials) {
+  //         Alert.alert(
+  //           'Enable Face ID?',
+  //           'Do you want to enable Face ID for faster login in the future?',
+  //           [
+  //             {
+  //               text: 'Not Now',
+  //               style: 'cancel',
+  //               onPress: () => navigation.replace('Home')
+  //             },
+  //             {
+  //               text: 'Enable',
+  //               onPress: async () => {
+  //                 await storeCredentialsForBiometric(userIdentifier, userPassword);
+  //                 navigation.replace('Home');
+  //               }
+  //             }
+  //           ]
+  //         );
+  //       } else {
+  //         navigation.replace('Home');
+  //       }
+  //     } else {
+  //       setError(data.message || 'Login failed. Please try again.');
+  //     }
+  //   } catch (error) {
+  //     console.error('Login error:', error);
+  //     setError('Network error. Please check your connection and try again.');
+  //   } finally {
+  //     setIsLoading(false);
+  //   }
+  // };
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -390,10 +497,13 @@ export default function Login({ navigation }) {
       return;
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setError('Please enter a valid email address');
-      return;
+    // Only validate email format if identifier contains '@'
+    if (email.includes('@')) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        setError('Please enter a valid email address');
+        return;
+      }
     }
 
     await performLogin(email, password);
@@ -556,9 +666,9 @@ export default function Login({ navigation }) {
               }
             ]}
           >
-            {/* Email Field */}
+            {/* Email/Username Field */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
+              <Text style={styles.label}>Email or Username</Text>
               <TextInput
                 style={styles.input}
                 value={email}
@@ -566,7 +676,7 @@ export default function Login({ navigation }) {
                   setEmail(text);
                   setError('');
                 }}
-                placeholder="Enter your email"
+                placeholder="Enter your email or username"
                 placeholderTextColor="#999"
                 keyboardType="email-address"
                 autoCapitalize="none"

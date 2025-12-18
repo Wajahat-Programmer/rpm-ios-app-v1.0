@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,112 +7,164 @@ import {
   Image,
   ScrollView,
   Dimensions,
-  TextInput,
   StatusBar,
   Alert,
-  Platform, 
-  
-  
-  Switch
+  ActivityIndicator,
+  Platform
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import globalStyles from './globalStyles';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 
-export default function Profile({ navigation }) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [userData, setUserData] = useState({
-    firstName: 'Mitchell',
-    lastName: 'Ryan',
-    email: 'ryan.mitchell@email.com',
-    phone: '+1 (555) 123-4567',
-    dateOfBirth: '1985-06-15',
-    gender: 'Male',
-    height: '180 cm',
-    weight: '82 kg',
-    bloodType: 'O+',
-    emergencyContact: 'Sarah Mitchell',
-    emergencyPhone: '+1 (555) 987-6543'
-  });
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [healthDataSharing, setHealthDataSharing] = useState(false);
+// Responsive size calculator
+const responsiveSize = (size) => {
+  const scale = width / 375; // 375 is standard iPhone width
+  return Math.round(size * Math.min(scale, 2));
+};
 
-  const handleBack = () => {
-    if (isEditing) {
+export default function Profile({ navigation }) {
+  const [isLoading, setIsLoading] = useState(true);
+  const [userData, setUserData] = useState({
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    dateOfBirth: '',
+    gender: '',
+  });
+
+  // Fetch user data from API
+  const fetchUserData = async () => {
+    try {
+      setIsLoading(true);
+      console.log('🔄 Starting to fetch user data from API...');
+      
+      const token = await AsyncStorage.getItem('token');
+      console.log('🔑 Token retrieved from storage:', token ? 'Yes' : 'No');
+      
+      if (!token) {
+        console.log('❌ No token found, user might not be logged in');
+        Alert.alert('Error', 'Please login again');
+        navigation.navigate('Login');
+        return;
+      }
+
+      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/check-me', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
+
+      console.log('📡 API Response Status:', response.status);
+
+      const responseText = await response.text();
+      console.log('📡 API Raw Response:', responseText);
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log('✅ Successfully parsed JSON response:', JSON.stringify(data, null, 2));
+      } catch (parseError) {
+        console.error('❌ Failed to parse JSON response:', parseError);
+        console.error('Raw response that failed to parse:', responseText);
+        throw new Error('Invalid JSON response from server');
+      }
+
+      // Check for the correct response structure
+      if (response.ok && data.ok) {
+        console.log('✅ API call successful, user data:', data.user);
+        
+        // Map API response to local state
+        const user = data.user;
+        
+        // Split the name into first and last name
+        const nameParts = user.name ? user.name.split(' ') : ['', ''];
+        const firstName = nameParts[0] || '';
+        const lastName = nameParts.slice(1).join(' ') || '';
+        
+        setUserData({
+          firstName: firstName,
+          lastName: lastName,
+          email: user.email || '',
+          phone: user.phoneNumber || '',
+          dateOfBirth: user.dateOfBirth || '',
+          gender: user.gender || '',
+        });
+        
+        console.log('✅ User data successfully updated in state');
+      } else {
+        console.error('❌ API returned error:', data.message || 'Unknown error');
+        Alert.alert('Error', data.message || 'Failed to fetch user data');
+      }
+    } catch (error) {
+      console.error('❌ Error fetching user data:', error);
       Alert.alert(
-        'Discard Changes?',
-        'Are you sure you want to discard your changes?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { 
-            text: 'Discard', 
-            onPress: () => {
-              setIsEditing(false);
-              navigation.goBack();
-            }
-          }
-        ]
+        'Network Error', 
+        'Failed to load profile data. Please check your connection and try again.'
       );
-    } else {
-      navigation.goBack();
+    } finally {
+      setIsLoading(false);
+      console.log('🏁 Finished loading user data, isLoading set to false');
     }
   };
 
-  const handleSave = () => {
-    setIsEditing(false);
-    Alert.alert('Success', 'Profile updated successfully!');
+  useEffect(() => {
+    console.log('🎯 Profile component mounted, fetching user data...');
+    fetchUserData();
+  }, []);
+
+  const handleBack = () => {
+    navigation.goBack();
   };
 
-  const handleEdit = () => {
-    setIsEditing(true);
-  };
-
-  const handleInputChange = (field, value) => {
-    setUserData(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const renderEditableField = (label, value, field, keyboardType = 'default') => (
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>{label}</Text>
-      {isEditing ? (
-        <TextInput
-          style={styles.textInput}
-          value={value}
-          onChangeText={(text) => handleInputChange(field, text)}
-          keyboardType={keyboardType}
-        />
-      ) : (
-        <Text style={styles.inputValue}>{value}</Text>
-      )}
+  const renderInfoField = (label, value) => (
+    <View style={styles.infoField}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value || 'Not set'}</Text>
     </View>
   );
+
+  // Show loading indicator while fetching data
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <StatusBar backgroundColor={globalStyles.primaryColor.color} barStyle="light-content" />
+        <SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={handleBack}>
+              <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Profile</Text>
+            <View style={styles.headerPlaceholder} />
+          </View>
+        </SafeAreaView>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={globalStyles.primaryColor.color} />
+          <Text style={styles.loadingText}>Loading profile data...</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
       <StatusBar backgroundColor={globalStyles.primaryColor.color} barStyle="light-content" />
       
-      {/* Header - Updated to match BloodPressure.js */}
-<SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
-  <View style={styles.header}>
-    <TouchableOpacity onPress={handleBack}>
-      <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
-    </TouchableOpacity>
-    <Text style={styles.headerTitle}>Profile</Text>
-    {isEditing ? (
-      <TouchableOpacity onPress={handleSave} style={styles.saveButton}>
-        <Text style={styles.saveButtonText}>Save</Text>
-      </TouchableOpacity>
-    ) : (
-      <TouchableOpacity onPress={handleEdit} style={styles.editButton}>
-        <Text style={styles.editButtonText}>Edit</Text>
-      </TouchableOpacity>
-    )}
-  </View>
-</SafeAreaView>
+      {/* Header - Fixed to match Settings header */}
+      <SafeAreaView edges={['top']} style={{ backgroundColor: globalStyles.primaryColor.color }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={handleBack}>
+            <Image style={styles.backIcon} source={require('./assets/icon_back.png')} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Profile</Text>
+          <View style={styles.headerPlaceholder} />
+        </View>
+      </SafeAreaView>
 
       <ScrollView 
         style={styles.scrollView}
@@ -126,32 +178,30 @@ export default function Profile({ navigation }) {
               source={require('./assets/avatar.png')} 
               style={styles.avatar} 
             />
-            {isEditing && (
-              <TouchableOpacity style={styles.cameraButton}>
-                <Text style={styles.cameraIcon}>📷</Text>
-              </TouchableOpacity>
-            )}
           </View>
           <Text style={styles.userName}>
             {userData.firstName} {userData.lastName}
           </Text>
           <Text style={styles.userEmail}>{userData.email}</Text>
-          <Text style={styles.userId}>ID: USR-789456123</Text>
+          <Text style={styles.userRole}>Role: Patient</Text>
         </View>
 
         {/* Personal Information */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Personal Information</Text>
           <View style={styles.sectionContent}>
-            {renderEditableField('First Name', userData.firstName, 'firstName')}
-            {renderEditableField('Last Name', userData.lastName, 'lastName')}
-            {renderEditableField('Email', userData.email, 'email', 'email-address')}
-            {renderEditableField('Phone', userData.phone, 'phone', 'phone-pad')}
+            {renderInfoField('First Name', userData.firstName)}
+            {renderInfoField('Last Name', userData.lastName)}
+            {renderInfoField('Email', userData.email)}
+            {renderInfoField('Phone', userData.phone)}
+            {renderInfoField('Date of Birth', userData.dateOfBirth)}
+            {renderInfoField('Gender', userData.gender)}
           </View>
         </View>
+
         {/* App Version */}
         <View style={styles.versionContainer}>
-          <Text style={styles.versionText}>22 Remote Patient Monitoring Services </Text>
+          <Text style={styles.versionText}>22 Remote Patient Monitoring Services</Text>
           <Text style={styles.versionNumber}>Version 1.0 (Build 2101)</Text>
         </View>
       </ScrollView>
@@ -164,66 +214,44 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa'
   },
-  // Updated header to match BloodPressure.js
-// Replace your header style with this:
-header: {
-  width: '100%',
-  paddingTop: StatusBar.currentHeight, // This adds padding for the status bar
-  height: (height * 0.08) + StatusBar.currentHeight, // Add status bar height to your existing height
-  backgroundColor: globalStyles.primaryColor.color,
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  paddingHorizontal: 15,
-},
+  header: {
+    width: '100%',
+    height: height * 0.08,
+    backgroundColor: globalStyles.primaryColor.color,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 15,
+  },
   backIcon: { 
     width: width * 0.06, 
     height: width * 0.06, 
     resizeMode: 'contain', 
     tintColor: '#fff' 
   },
-headerTitle: {
-  color: 'white',
-  fontSize: width * 0.05,
-  fontWeight: 'bold',
-  flex: 1,
-  textAlign: 'center',
-},
-
-  editButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    paddingHorizontal: width * 0.04,
-    paddingVertical: height * 0.008,
-    borderRadius: 16
+  headerTitle: {
+    color: 'white',
+    fontSize: width * 0.05,
+    fontWeight: 'bold',
+    flex: 1,
+    textAlign: 'center',
   },
-  editButtonText: {
-    color: '#fff',
-    fontSize: width * 0.035,
-    fontWeight: '600'
-  },
-  saveButton: {
-    backgroundColor: '#4CAF50',
-    paddingHorizontal: width * 0.04,
-    paddingVertical: height * 0.008,
-    borderRadius: 16
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: width * 0.035,
-    fontWeight: '600'
+  headerPlaceholder: {
+    width: width * 0.06
   },
   scrollView: {
-    flex: 1
+    flex: 1,
   },
   scrollContent: {
-    paddingBottom: height * 0.05
+    paddingBottom: responsiveSize(20),
+    flexGrow: 1,
   },
   profileHeader: {
     alignItems: 'center',
-    padding: width * 0.05,
+    padding: responsiveSize(20),
     backgroundColor: '#fff',
-    margin: width * 0.04,
-    borderRadius: 16,
+    margin: responsiveSize(15),
+    borderRadius: responsiveSize(16),
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -234,50 +262,51 @@ headerTitle: {
     elevation: 5,
   },
   avatarContainer: {
-    position: 'relative',
-    marginBottom: height * 0.02
+    marginBottom: responsiveSize(15),
   },
   avatar: {
-    width: width * 0.25,
-    height: width * 0.25,
-    borderRadius: width * 0.125,
-    borderWidth: 3,
-    borderColor: globalStyles.primaryColor.color
-  },
-  cameraButton: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    backgroundColor: globalStyles.primaryColor.color,
-    width: width * 0.08,
-    height: width * 0.08,
-    borderRadius: width * 0.04,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  cameraIcon: {
-    fontSize: width * 0.045
+    width: responsiveSize(100),
+    height: responsiveSize(100),
+    borderRadius: responsiveSize(50),
+    borderWidth: responsiveSize(3),
+    borderColor: globalStyles.primaryColor.color,
+    minWidth: 80,
+    minHeight: 80,
   },
   userName: {
-    fontSize: width * 0.05,
+    fontSize: responsiveSize(20),
     fontWeight: 'bold',
     color: '#2c3e50',
-    marginBottom: height * 0.005
+    marginBottom: responsiveSize(5),
+    textAlign: 'center',
+    minFontSize: 18,
   },
   userEmail: {
-    fontSize: width * 0.038,
+    fontSize: responsiveSize(16),
     color: '#7f8c8d',
-    marginBottom: height * 0.002
+    marginBottom: responsiveSize(3),
+    textAlign: 'center',
+    minFontSize: 14,
   },
   userId: {
-    fontSize: width * 0.032,
-    color: '#bdc3c7'
+    fontSize: responsiveSize(14),
+    color: '#bdc3c7',
+    marginBottom: responsiveSize(2),
+    textAlign: 'center',
+    minFontSize: 12,
+  },
+  userRole: {
+    fontSize: responsiveSize(14),
+    color: '#bdc3c7',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    minFontSize: 12,
   },
   section: {
     backgroundColor: '#fff',
-    marginHorizontal: width * 0.04,
-    marginBottom: height * 0.025,
-    borderRadius: 16,
+    marginHorizontal: responsiveSize(15),
+    marginBottom: responsiveSize(20),
+    borderRadius: responsiveSize(16),
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: {
@@ -289,93 +318,71 @@ headerTitle: {
     elevation: 5,
   },
   sectionTitle: {
-    fontSize: width * 0.04,
+    fontSize: responsiveSize(18),
     fontWeight: 'bold',
     color: '#2c3e50',
-    padding: width * 0.04,
+    padding: responsiveSize(16),
     backgroundColor: '#f8f9fa',
     borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1'
+    borderBottomColor: '#ecf0f1',
+    minFontSize: 16,
   },
   sectionContent: {
-    padding: width * 0.04
+    padding: responsiveSize(16),
   },
-  inputGroup: {
-    marginBottom: height * 0.02
-  },
-  inputLabel: {
-    fontSize: width * 0.035,
-    color: '#7f8c8d',
-    marginBottom: height * 0.005,
-    fontWeight: '500'
-  },
-  inputValue: {
-    fontSize: width * 0.04,
-    color: '#2c3e50',
-    fontWeight: '600',
-    paddingVertical: height * 0.008
-  },
-  textInput: {
-    fontSize: width * 0.04,
-    color: '#2c3e50',
-    backgroundColor: '#f8f9fa',
-    padding: width * 0.03,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd'
-  },
-  preferenceItem: {
+  infoField: {
+    marginBottom: responsiveSize(15),
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: height * 0.02,
-    paddingVertical: height * 0.005
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
   },
-  preferenceInfo: {
-    flex: 1
+  infoLabel: {
+    fontSize: responsiveSize(16),
+    color: '#7f8c8d',
+    fontWeight: '500',
+    flex: 1,
+    minFontSize: 14,
   },
-  preferenceTitle: {
-    fontSize: width * 0.038,
-    fontWeight: '600',
+  infoValue: {
+    fontSize: responsiveSize(16),
     color: '#2c3e50',
-    marginBottom: 2
-  },
-  preferenceDescription: {
-    fontSize: width * 0.032,
-    color: '#7f8c8d'
-  },
-  accountButton: {
-    backgroundColor: '#f8f9fa',
-    padding: width * 0.04,
-    borderRadius: 12,
-    marginBottom: height * 0.015,
-    alignItems: 'center'
-  },
-  accountButtonText: {
-    fontSize: width * 0.038,
     fontWeight: '600',
-    color: globalStyles.primaryColor.color
+    flex: 1,
+    textAlign: 'right',
+    minFontSize: 14,
   },
-  deleteButton: {
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e74c3c'
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    padding: responsiveSize(20),
   },
-  deleteButtonText: {
-    color: '#e74c3c'
+  loadingText: {
+    marginTop: responsiveSize(20),
+    fontSize: responsiveSize(16),
+    color: '#7f8c8d',
+    textAlign: 'center',
+    minFontSize: 14,
   },
   versionContainer: {
     alignItems: 'center',
-    marginTop: height * 0.02,
-    marginBottom: height * 0.01
+    marginTop: responsiveSize(20),
+    marginBottom: responsiveSize(10),
+    paddingHorizontal: responsiveSize(15),
   },
   versionText: {
-    fontSize: width * 0.038,
+    fontSize: responsiveSize(14),
     color: '#7f8c8d',
-    marginBottom: 4
+    marginBottom: responsiveSize(4),
+    textAlign: 'center',
+    minFontSize: 12,
   },
   versionNumber: {
-    fontSize: width * 0.032,
-    color: '#bdc3c7'
-  }
+    fontSize: responsiveSize(12),
+    color: '#bdc3c7',
+    textAlign: 'center',
+    minFontSize: 10,
+  },
 });

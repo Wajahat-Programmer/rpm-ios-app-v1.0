@@ -1752,6 +1752,8 @@ PODS:
     - React-Core
   - react-native-cookies (6.2.1):
     - React-Core
+  - react-native-netinfo (11.4.1):
+    - React-Core
   - react-native-safe-area-context (5.6.1):
     - boost
     - DoubleConversion
@@ -2547,8 +2549,8 @@ PODS:
     - SocketRocket
     - Yoga
   - SocketRocket (0.7.1)
-  - VTMProductLib (1.5.2)
-  - VTO2Lib (1.10.2)
+  - VTMProductLib (1.5.3)
+  - VTO2Lib (1.10.4)
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2595,6 +2597,7 @@ DEPENDENCIES:
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
   - react-native-biometrics (from `../node_modules/react-native-biometrics`)
   - "react-native-cookies (from `../node_modules/@react-native-cookies/cookies`)"
+  - "react-native-netinfo (from `../node_modules/@react-native-community/netinfo`)"
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
@@ -2727,6 +2730,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-biometrics"
   react-native-cookies:
     :path: "../node_modules/@react-native-cookies/cookies"
+  react-native-netinfo:
+    :path: "../node_modules/@react-native-community/netinfo"
   react-native-safe-area-context:
     :path: "../node_modules/react-native-safe-area-context"
   react-native-sqlite-storage:
@@ -2810,10 +2815,10 @@ EXTERNAL SOURCES:
 
 CHECKOUT OPTIONS:
   VTMProductLib:
-    :commit: 4903aafe28961c23325d3e950604c744756ca53d
+    :commit: 0da90c22716e4a954a9923143d502833d7cb407b
     :git: https://github.com/Viatom-iOS/VTProductLib_Pods.git
   VTO2Lib:
-    :commit: 6730e808a2f313f497a7890eebfa027c0000c8d0
+    :commit: 550ac2efb3faa9f3c79c044a3abe83bf5d0f0c4e
     :git: https://github.com/Viatom-iOS/VTO2Lib_Pods.git
 
 SPEC CHECKSUMS:
@@ -2859,6 +2864,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: 1ead4fe154df3b1ba34b5a9e35ef3c4bdfa72ccb
   react-native-biometrics: 43ed5b828646a7862dbc7945556446be00798e7d
   react-native-cookies: d648ab7025833b977c0b19e142503034f5f29411
+  react-native-netinfo: cec9c4e86083cb5b6aba0e0711f563e2fbbff187
   react-native-safe-area-context: c6e2edd1c1da07bdce287fa9d9e60c5f7b514616
   react-native-sqlite-storage: 0c84826214baaa498796c7e46a5ccc9a82e114ed
   React-NativeModulesApple: eff2eba56030eb0d107b1642b8f853bc36a833ac
@@ -2897,8 +2903,8 @@ SPEC CHECKSUMS:
   RNScreens: 0bbf16c074ae6bb1058a7bf2d1ae017f4306797c
   RNSVG: 6f39605a4c4d200b11435c35bd077553c6b5963a
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
-  VTMProductLib: 94eacd7389ab1ec8bed661eb465fe1ffbd731409
-  VTO2Lib: 4149d9f1c8f50b6a5626e18e6a0a737cb49aef26
+  VTMProductLib: 649f6e8d6e4d1670f28693f61fc36d8d026bc6dd
+  VTO2Lib: 9c3b97845118d11aa88a17d6cd7d559278cfec92
   Yoga: 11c9686a21e2cd82a094a723649d9f4507200fb0
 
 PODFILE CHECKSUM: d8da584783d2631cf349c5c0e963d6b912e07abe

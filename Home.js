@@ -32,7 +32,7 @@ const healthCards = [
   { id: 6, image: require('./assets/ECG.png'), text: 'ECG', navigation: 'ECG' },
   { id: 3, image: require('./assets/BG.png'), text: 'Blood Glucose', disabled: true },
   { id: 5, image: require('./assets/T.png'), text: 'Temperature', disabled: true },
-  { id: 7, image: require('./assets/W.png'), text: 'Weight', disabled: true }
+  { id: 7, image: require('./assets/W.png'), text: 'Weight', disabled: true },
 ];
 
 // Summary cards data - BP will be updated dynamically
@@ -58,10 +58,49 @@ export default function Home({ navigation }) {
   const [selectedCards, setSelectedCards] = useState(['bp']);
   const [showModal, setShowModal] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [userData, setUserData] = useState({ name: '' }); // ADD THIS LINE
   const [bpData, setBpData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const menuRef = useRef(null);
   const scrollViewRef = useRef(null);
+
+
+    // Function to fetch user data
+  const fetchUserData = async () => {
+    try {
+      console.log('Fetching user data...');
+      const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/check-me', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include'
+      });
+
+      const responseText = await response.text();
+      console.log('User API Raw Response:', responseText);
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log('✅ User data parsed successfully:', data);
+      } catch (parseError) {
+        console.error('❌ Failed to parse user data JSON:', parseError);
+        return;
+      }
+
+      if (response.ok && data.ok && data.user) {
+        console.log('✅ User data loaded:', data.user);
+        setUserData({
+          name: data.user.name || '',
+        });
+      } else {
+        console.log('No user data found');
+      }
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+    }
+  };
 
   // Function to fetch latest BP data
   const fetchLatestBPData = async () => {
@@ -110,6 +149,7 @@ catch (error) {
   useEffect(() => {
     // Fetch latest BP data when component mounts
     fetchLatestBPData();
+    fetchUserData(); // ADD THIS LINE
   }, []);
 
   const handleLogout = async () => {
@@ -228,13 +268,13 @@ return (
       </View>
 
       {/* Profile Row */}
-      <View style={styles.profileRow}>
-        <Image source={require('./assets/avatar.png')} style={styles.profileImage} />
-        <View>
-          <Text style={styles.welcomeText}>Welcome</Text>
-          <Text style={styles.userName}>Mitchell, Ryan</Text>
+        <View style={styles.profileRow}>
+          <Image source={require('./assets/avatar.png')} style={styles.profileImage} />
+          <View>
+            <Text style={styles.welcomeText}>Welcome</Text>
+            <Text style={styles.userName}>{userData.name || 'User'}</Text>
+          </View>
         </View>
-      </View>
 
       {/* Main ScrollView Content */}
       <ScrollView 

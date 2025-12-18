@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,10 +11,14 @@ import {
   StatusBar,
   Modal,
   TextInput,
-  Alert
+  Alert,
+  Keyboard, 
+  TouchableWithoutFeedback, 
+  Linking
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import globalStyles from './globalStyles';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 
 const { width, height } = Dimensions.get('window');
@@ -26,6 +30,78 @@ export default function Settings({ navigation }) {
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
 
+
+    // ADD THESE STATES FOR USER DATA
+  const [userData, setUserData] = useState({
+    name: '',
+    email: '',
+    role: '',
+    phoneNumber: ''
+  });
+  const [isLoading, setIsLoading] = useState(true);
+
+
+  const fetchUserData = async () => {
+  try {
+    setIsLoading(true);
+    
+    const token = await AsyncStorage.getItem('token');
+    
+    if (!token) {
+      navigation.navigate('Login');
+      return;
+    }
+
+    const response = await fetch('https://rmtrpm.duckdns.org/rpm-be/api/auth/check-me', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      credentials: 'include'
+    });
+
+    const responseText = await response.text();
+    let data;
+    
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Failed to parse JSON response:', parseError);
+      return;
+    }
+
+    if (response.ok && data.ok) {
+      const user = data.user;
+      
+      // Extract name parts
+      const nameParts = user.name ? user.name.split(' ') : ['', ''];
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ') || '';
+      
+      // Update user data state
+      setUserData({
+        name: `${firstName}, ${lastName}`, // Format as "Mitchell, Ryan"
+        email: user.email || '',
+        role: user.role || 'Patient', // Assuming role is available in API response
+        phoneNumber: user.phoneNumber || ''
+      });
+      
+      // Also update support email with user's email
+      setSupportEmail(user.email || "");
+    }
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+// ADD useEffect to fetch data on component mount
+useEffect(() => {
+  fetchUserData();
+}, []);
+
   const handleBack = () => {
     navigation.navigate('Home');
   };
@@ -35,7 +111,7 @@ export default function Settings({ navigation }) {
       id: 'profile',
       title: 'Profile Settings',
       icon: require('./assets/profile-setting.png'),
-      description: 'Update your personal information',
+      description: 'Your personal information',
       action: () => navigation.navigate('Profile')
     },
     {
@@ -49,10 +125,10 @@ export default function Settings({ navigation }) {
     },
     {
       id: 'privacy',
-      title: 'Privacy & Security',
+      title: 'Privacy Policy',
       icon: require('./assets/privacy-policy.png'),
-      description: 'Control your data privacy settings',
-      action: () => navigation.navigate('PrivacySecurity')
+      description: 'How we collect, use, and protect your data',
+       action: () => Linking.openURL('https://rmtrpm.duckdns.org/privacy')
     },
     {
       id: 'help',
@@ -93,19 +169,24 @@ export default function Settings({ navigation }) {
         showsVerticalScrollIndicator={false}
       >
         {/* User Profile Card */}
+        {/* User Profile Card */}
         <View style={styles.profileCard}>
           <Image 
             source={require('./assets/avatar.png')} 
             style={styles.profileImage} 
           />
           <View style={styles.profileInfo}>
-            <Text style={styles.userName}>Mitchell, Ryan</Text>
-            <Text style={styles.userEmail}>ryan.mitchell@email.com</Text>
-            <Text style={styles.userId}>ID: USR-789456123</Text>
+            <Text style={styles.userName}>
+              {isLoading ? 'Loading...' : userData.name || 'User Name'}
+            </Text>
+            <Text style={styles.userEmail}>
+              {isLoading ? 'loading...' : userData.email || 'user@email.com'}
+            </Text>
+            {/* REPLACE ID WITH ROLE */}
+            <Text style={styles.userId}>
+              Role: {isLoading ? 'loading...' : userData.role || 'Patient'}
+            </Text>
           </View>
-          <TouchableOpacity style={styles.editButton}>
-            <Text style={styles.editButtonText}>Edit</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Settings Options */}
@@ -141,8 +222,10 @@ export default function Settings({ navigation }) {
                     thumbColor={item.switchValue ? '#f4f3f4' : '#f4f3f4'}
                   />
                 ) : (
+
+                  
                   <Image 
-                    source={require('./assets/back.png')} 
+                    source={require('./assets/chevron-right.png')} 
                     style={styles.chevronIcon} 
                   />
                 )}
@@ -166,86 +249,105 @@ export default function Settings({ navigation }) {
         </TouchableOpacity> */}
       </ScrollView>
 
-      <Modal
-        transparent={true}
-        visible={showSupportModal}
-        animationType="slide"
-        onRequestClose={() => setShowSupportModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Contact Support</Text>
+<Modal
+  transparent={true}
+  visible={showSupportModal}
+  animationType="slide"
+  onRequestClose={() => {
+    setShowSupportModal(false);
+    Keyboard.dismiss(); // ADD THIS
+  }}
+>
+  {/* Wrap the modal overlay with TouchableWithoutFeedback */}
+  <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
+    <View style={styles.modalOverlay}>
+      <TouchableWithoutFeedback onPress={() => {}}>
+        <View style={styles.modalContainer}>
+          <Text style={styles.modalTitle}>Contact Support</Text>
 
-            {/* Email (read-only) */}
-            <TextInput
-              style={styles.input}
-              value={supportEmail}
-              editable={false}
-            />
+          {/* Email (read-only) */}
+          <TextInput
+            style={styles.input}
+            value={supportEmail}
+            editable={false}
+          />
 
-            {/* Subject */}
-            <TextInput
-              style={styles.input}
-              placeholder="Subject (optional)"
-              value={subject}
-              onChangeText={setSubject}
-            />
+          {/* Subject */}
+          <TextInput
+            style={styles.input}
+            placeholder="Subject (optional)"
+            value={subject}
+            onChangeText={setSubject}
+            returnKeyType="next"
+            onSubmitEditing={() => {
+              // Optional: focus on message input if needed
+            }}
+          />
 
-            {/* Message */}
-            <TextInput
-              style={[styles.input, styles.messageBox]}
-              placeholder="Enter your message"
-              value={message}
-              onChangeText={setMessage}
-              multiline
-            />
+          {/* Message */}
+          <TextInput
+            style={[styles.input, styles.messageBox]}
+            placeholder="Enter your message"
+            value={message}
+            onChangeText={setMessage}
+            multiline
+            returnKeyType="done"
+            blurOnSubmit={true}
+          />
 
-            {/* Buttons */}
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => setShowSupportModal(false)}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </TouchableOpacity>
+          {/* Buttons */}
+          <View style={styles.modalButtons}>
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => {
+                setShowSupportModal(false);
+                Keyboard.dismiss();
+              }}
+            >
+              <Text style={styles.buttonText}>Cancel</Text>
+            </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.sendButton}
-                onPress={async () => {
-                  if (!message.trim()) {
-                    Alert.alert("Error", "Message is required.");
-                    return;
-                  }
+            <TouchableOpacity
+              style={styles.sendButton}
+              onPress={async () => {
+                if (!message.trim()) {
+                  Alert.alert("Error", "Message is required.");
+                  return;
+                }
 
-                  try {
-                    // 🔹 Call backend API here to send email
-                    // Example:
-                    // await fetch("https://your-backend.com/send-support-email", {
-                    //   method: "POST",
-                    //   headers: { "Content-Type": "application/json" },
-                    //   body: JSON.stringify({
-                    //     to: "info@twentytwohealth.com",
-                    //     from: supportEmail,
-                    //     subject,
-                    //     message
-                    //   })
-                    // });
+                Keyboard.dismiss(); // ADD THIS - dismiss keyboard before sending
 
-                    Alert.alert("Success", "Your message has been sent.");
-                    setShowSupportModal(false);
-                    setSubject("");
-                    setMessage("");
-                  } catch (error) {
-                    Alert.alert("Error", "Failed to send message.");
-                  }
-                }}
-              >
-                <Text style={styles.buttonText}>Send</Text>
-              </TouchableOpacity>
-            </View>
+                try {
+                  // 🔹 Call backend API here to send email
+                  // Example:
+                  // await fetch("https://your-backend.com/send-support-email", {
+                  //   method: "POST",
+                  //   headers: { "Content-Type": "application/json" },
+                  //   body: JSON.stringify({
+                  //     to: "info@twentytwohealth.com",
+                  //     from: supportEmail,
+                  //     subject,
+                  //     message
+                  //   })
+                  // });
+
+                  Alert.alert("Success", "Your message has been sent.");
+                  setShowSupportModal(false);
+                  setSubject("");
+                  setMessage("");
+                } catch (error) {
+                  Alert.alert("Error", "Failed to send message.");
+                }
+              }}
+            >
+              <Text style={styles.buttonText}>Send</Text>
+            </TouchableOpacity>
           </View>
         </View>
-      </Modal>
+      </TouchableWithoutFeedback>
+    </View>
+  </TouchableWithoutFeedback>
+</Modal>
     </View>
   );
 }

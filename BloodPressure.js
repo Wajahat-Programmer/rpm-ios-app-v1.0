@@ -639,6 +639,18 @@ const resetMeasurementState = useCallback(() => {
     resetMeasurementState();
   };
 
+  // Add this useEffect to auto-clear device errors after 5 seconds
+useEffect(() => {
+  if (deviceError && !deviceError.isCritical) {
+    const timeoutId = setTimeout(() => {
+      console.log('[UI] Auto-clearing non-critical device error');
+      setDeviceError(null);
+    }, 1000); // Clear after 5 seconds for non-critical errors
+    
+    return () => clearTimeout(timeoutId);
+  }
+}, [deviceError]);
+
   // Real-time Data Handler
 // Deduplicated Real-time Data Handler
 const handleRealTimeData = useCallback((data) => {
@@ -681,70 +693,12 @@ const handleRealTimeData = useCallback((data) => {
   }
 
   // Handle final measurement result - WITH DEDUPLICATION
-  if (data.type === 'BP') {
-    // Create a unique key for this result
-    const resultKey = `bp_${data.systolic}_${data.diastolic}_${data.pulse}_${Date.now()}`;
-    
-    // Check if we're already processing or have processed this result
-    if (processingRef.current || processedResults.has(resultKey)) {
-      console.log('🔄 Duplicate BP result detected, skipping:', resultKey);
+  // Disable final BP result here – handled in onMeasurementResult
+    if (data.type === 'BP') {
+      console.log('⚠️ Final BP ignored here – handled in onMeasurementResult');
       return;
     }
 
-    // Mark as processing
-    processingRef.current = true;
-    setProcessedResults(prev => new Set([...prev, resultKey]));
-
-    console.log('📝 Processing final BP result:', data);
-    
-    resetMeasurementState();
-    const now = new Date();
-    const currentDevice = connectedDeviceRef.current;
-    
-    const newReading = {
-      id: Date.now(),
-      date: now.toLocaleDateString(),
-      time: now.toLocaleTimeString(),
-      systolic: Number(data.systolic),
-      diastolic: Number(data.diastolic),
-      bpm: Number(data.pulse),
-      mean: typeof data.mean === 'number' ? Number(data.mean) : undefined,
-      timestamp: now.toISOString(),
-      deviceName: currentDevice?.name,
-      deviceId: currentDevice?.id
-    };
-    
-    console.log('📤 Storing device data with battery:', newReading);
-    
-    // Store the data
-    storeMeasurementData(newReading)
-      .then(() => {
-        console.log('✅ Device data stored successfully');
-        showToastMessage(
-          `Measurement Complete: ${newReading.systolic}/${newReading.diastolic} mmHg, Pulse: ${newReading.bpm} BPM`,
-          3000
-        );
-      })
-      .catch(error => {
-        console.error('❌ Failed to store device data:', error);
-      })
-      .finally(() => {
-        // Reset processing flag after a delay to prevent immediate duplicates
-        setTimeout(() => {
-          processingRef.current = false;
-        }, 2000);
-      });
-    
-    setRealTimeData({
-      type: 'BP',
-      systolic: newReading.systolic,
-      diastolic: newReading.diastolic,
-      pulse: newReading.bpm,
-      mean: newReading.mean,
-    });
-    
-    return;
-  }
 }, [processedResults]);
 
   // Event Subscriptions
@@ -762,18 +716,43 @@ const discoverySubscription = ViatomDeviceManager.addListener('onDeviceDiscovere
 
 // Replace your current connectionSubscription in useEffect
 // Replace your current connectionSubscription in useEffect
+// const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
+//   console.log('[BLE] Connected:', device);
+  
+//   const deviceInfo = {
+//    name: device.name || 'Unknown Device',
+//     id: device.id,
+//     batteryLevel: batteryLevel
+//   };
+  
+//   setConnectedDevice(deviceInfo);
+//   connectedDeviceRef.current = deviceInfo;
+//   setConnectionVerified(true); // Mark connection as verified
+//   console.log('💾 Stored device in ref:', connectedDeviceRef.current);
+  
+//   ViatomDeviceManager.requestDeviceInfo?.();
+//   ViatomDeviceManager.requestBPConfig?.();
+  
+//   ViatomDeviceManager.stopScan?.();
+  
+//   // Force UI update
+//   setConnectedDevice(prev => ({...prev}));
+// });
 const connectionSubscription = ViatomDeviceManager.addListener('onDeviceConnected', (device) => {
   console.log('[BLE] Connected:', device);
   
+  // CLEAR ANY PREVIOUS DEVICE ERRORS WHEN CONNECTION SUCCEEDS
+  setDeviceError(null); // ADD THIS LINE
+  
   const deviceInfo = {
-   name: device.name || 'Unknown Device',
+    name: device.name || 'Unknown Device',
     id: device.id,
     batteryLevel: batteryLevel
   };
   
   setConnectedDevice(deviceInfo);
   connectedDeviceRef.current = deviceInfo;
-  setConnectionVerified(true); // Mark connection as verified
+  setConnectionVerified(true);
   console.log('💾 Stored device in ref:', connectedDeviceRef.current);
   
   ViatomDeviceManager.requestDeviceInfo?.();

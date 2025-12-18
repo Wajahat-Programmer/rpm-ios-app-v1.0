@@ -51,51 +51,59 @@ export default function AboutAppScreen({ navigation }) {
             <Text style={styles.bullet}>•</Text>
             <Text style={styles.featureText}>Real-time health monitoring</Text>
           </View>
-          <View style={styles.featureItem}>
+            <View style={styles.featureItem}>
             <Text style={styles.bullet}>•</Text>
-            <Text style={styles.featureText}>Secure messaging with healthcare providers</Text>
+            <Text style={styles.featureText}>Connect to medical devices via BLE</Text>
           </View>
           <View style={styles.featureItem}>
             <Text style={styles.bullet}>•</Text>
-            <Text style={styles.featureText}>Medication reminders and tracking</Text>
+            <Text style={styles.featureText}>Real-time vitals displayed instantly on screen</Text>
+          </View>
+            <View style={styles.featureItem}>
+            <Text style={styles.bullet}>•</Text>
+            <Text style={styles.featureText}>Automatic upload of measurements to clinician dashboard</Text>
           </View>
           <View style={styles.featureItem}>
             <Text style={styles.bullet}>•</Text>
-            <Text style={styles.featureText}>Health data trends and insights</Text>
+            <Text style={styles.featureText}>View final results</Text>
+          </View>
+          <View style={styles.featureItem}>
+            <Text style={styles.bullet}>•</Text>
+            <Text style={styles.featureText}>Secure in-app chat with assigned doctor for continuous support</Text>
           </View>
         </View>
 
         {/* Legal Links Card */}
-        <View style={styles.card}>
+        {/* <View style={styles.card}>
           <Text style={styles.sectionTitle}>Legal</Text>
           <TouchableOpacity 
             style={styles.linkItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/terms')}
+            onPress={() => Linking.openURL('https://yourwebsite.com/terms')}
           >
             <Text style={styles.linkText}>Terms of Service</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/privacy')}
+            onPress={() => Linking.openURL('https://yourwebsite.com/privacy')}
           >
             <Text style={styles.linkText}>Privacy Policy</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/hipaa')}
+            onPress={() => Linking.openURL('https://yourwebsite.com/hipaa')}
           >
             <Text style={styles.linkText}>HIPAA Compliance</Text>
           </TouchableOpacity>
-        </View>
+        </View> */}
 
         {/* Company Info Card */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Company</Text>
-          <Text style={styles.companyInfo}>
+          {/* <Text style={styles.companyInfo}>
             Developed Revive Medical Technologies Inc.
-          </Text>
+          </Text> */}
           <Text style={styles.companyInfo}>
-            © 2025 Revive Medical Technologies. All rights reserved.
+            © 2025 22-RPM. All rights reserved.
           </Text>
         </View>
 
@@ -107,15 +115,15 @@ export default function AboutAppScreen({ navigation }) {
           </Text>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('mailto:Info@twentytwohealth.com')}
+            onPress={() => Linking.openURL('mailto:info@twentytwohealth.com')}
           >
-            <Text style={styles.linkText}>Info@twentytwohealth.com</Text>
+            <Text style={styles.linkText}>info@twentytwohealth.com</Text>
           </TouchableOpacity>
           <TouchableOpacity 
             style={styles.linkItem}
-            onPress={() => Linking.openURL('tel:+18002223333')}
+            onPress={() => Linking.openURL('tel:+16617337622')}
           >
-            <Text style={styles.linkText}>1-800-222-3333</Text>
+            <Text style={styles.linkText}>+1 (661) 733-7622</Text>
           </TouchableOpacity>
         </View>
 

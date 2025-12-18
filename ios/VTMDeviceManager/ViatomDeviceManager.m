@@ -65,6 +65,9 @@ static NSString * const kVoiceEnabledKey         = @"rpm.viatom.voiceEnabled";
 @property (nonatomic, assign) BOOL voiceEnabled;
 @property (nonatomic, strong) AVSpeechSynthesizer *tts;
 
+@property (nonatomic, assign) BOOL hasSentFinalResult;
+
+
 @end
 
 @implementation ViatomDeviceManager
@@ -166,10 +169,10 @@ RCT_EXPORT_MODULE();
             isCritical = YES;
             break;
             
-        case VTMBLEPkgTypeCommonError:
-            errorCode = @"GENERAL_ERROR";
-            errorMessage = @"Device operation failed";
-            break;
+        // case VTMBLEPkgTypeCommonError:
+        //     errorCode = @"GENERAL_ERROR";
+        //     errorMessage = @"Device operation failed";
+        //     break;
             
         case VTMBLEPkgTypeNotFound:
             errorCode = @"FILE_NOT_FOUND";
@@ -259,6 +262,7 @@ RCT_EXPORT_MODULE();
         self.isDeviceInitiatedMeasurement = YES;
         self.isWaitingForBPResult = YES;
         self.lowPressureStreak = 0;
+        self.hasSentFinalResult = NO;  
         
         [self sendEventWithName:@"onBPStatusChanged" 
                            body:@{@"status": @"measurement_started", 
@@ -810,7 +814,8 @@ commandCompletion:(u_char)cmdType
             uint16_t mean = vt_u16le(p + 7);
             uint16_t pulse = vt_u16le(p + 9);
             if (vt_plausible_result_values(sys, dia, mean, pulse)) {
-                [self sendEventWithName:@"onMeasurementResult" body:@{
+                [self sendFinalBPResultOnce:@{
+
                   @"type": @"BP_RESULT",
                   @"systolic": @(sys), @"diastolic": @(dia),
                   @"meanPressure": @(mean), @"pulse": @(pulse),
@@ -856,8 +861,8 @@ if (n == 34 || n == 36 || n == 38 || n == 40 || n == 44) {
     uint16_t sys=0,dia=0,mean=0,pulse=0;
     if (vt_try_extract_result(response, &sys, &dia, &mean, &pulse)) {
         NSLog(@"[Viatom] ✅ Final BP Result extracted: %d/%d mmHg, Pulse: %d", sys, dia, pulse);
-        
-        [self sendEventWithName:@"onMeasurementResult" body:@{
+        [self sendFinalBPResultOnce:@{
+
           @"type": @"BP_RESULT",
           @"systolic": @(sys), @"diastolic": @(dia),
           @"meanPressure": @(mean), @"pulse": @(pulse),
@@ -1048,6 +1053,8 @@ if (n == 34 || n == 36 || n == 38 || n == 40 || n == 44) {
     self.isDeviceInitiatedMeasurement = NO; // App-initiated
     self.isWaitingForBPResult = YES;
     self.lowPressureStreak = 0;
+    self.hasSentFinalResult = NO;
+
     self.measurementStartTime = [NSDate date];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1204,5 +1211,24 @@ RCT_EXPORT_METHOD(forgetSavedDevice) {
 RCT_EXPORT_METHOD(setVoiceEnabled:(BOOL)enabled) {
     [self persistVoiceEnabled:enabled];
 }
+
+- (void)sendFinalBPResultOnce:(NSDictionary *)result {
+    if (self.hasSentFinalResult) {
+        NSLog(@"[Viatom] ⚠️ Duplicate BP result blocked");
+        return;
+    }
+
+    self.hasSentFinalResult = YES;
+
+    [self sendEventWithName:@"onMeasurementResult" body:result];
+
+    // stop timers
+    self.isWaitingForBPResult = NO;
+    [self.measurementTimeoutTimer invalidate];
+    self.measurementTimeoutTimer = nil;
+
+    [self exitBPMode];
+}
+
 
 @end

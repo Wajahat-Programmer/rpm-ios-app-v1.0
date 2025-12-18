@@ -178,53 +178,53 @@ export default function PrivacySecurityScreen({ navigation }) {
         </View>
 
         {/* Legal Card */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Legal</Text>
-          
-          <TouchableOpacity 
-            style={styles.settingItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/privacy')}
-          >
-            <View style={styles.settingInfo}>
-              <Text style={styles.settingName}>Privacy Policy</Text>
-              <Text style={styles.settingDescription}>How we collect, use, and protect your data</Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.settingItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/terms')}
-          >
-            <View style={styles.settingInfo}>
-              <Text style={styles.settingName}>Terms of Service</Text>
-              <Text style={styles.settingDescription}>Rules and guidelines for using our service</Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.settingItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/hipaa')}
-          >
-            <View style={styles.settingInfo}>
-              <Text style={styles.settingName}>HIPAA Compliance</Text>
-              <Text style={styles.settingDescription}>How we protect your health information</Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.settingItem}
-            // onPress={() => Linking.openURL('https://yourwebsite.com/data-processing')}
-          >
-            <View style={styles.settingInfo}>
-              <Text style={styles.settingName}>Data Processing Agreement</Text>
-              <Text style={styles.settingDescription}>How we handle and process your data</Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
-          </TouchableOpacity>
-        </View>
+<View style={styles.card}>
+  <Text style={styles.sectionTitle}>Legal</Text>
+  
+  <TouchableOpacity 
+    style={styles.settingItem}
+    onPress={() => Linking.openURL('https://rmtrpm.duckdns.org/privacy')}
+  >
+    <View style={styles.settingInfo}>
+      <Text style={styles.settingName}>Privacy Policy</Text>
+      <Text style={styles.settingDescription}>How we collect, use, and protect your data</Text>
+    </View>
+    <Text style={styles.chevron}>›</Text>
+  </TouchableOpacity>
+  
+  <TouchableOpacity 
+    style={styles.settingItem}
+    onPress={() => Linking.openURL('https://rmtrpm.duckdns.org/privacy')}
+  >
+    <View style={styles.settingInfo}>
+      <Text style={styles.settingName}>Terms of Service</Text>
+      <Text style={styles.settingDescription}>Rules and guidelines for using our service</Text>
+    </View>
+    <Text style={styles.chevron}>›</Text>
+  </TouchableOpacity>
+  
+  <TouchableOpacity 
+    style={styles.settingItem}
+    onPress={() => Linking.openURL('https://rmtrpm.duckdns.org/privacy')}
+  >
+    <View style={styles.settingInfo}>
+      <Text style={styles.settingName}>HIPAA Compliance</Text>
+      <Text style={styles.settingDescription}>How we protect your health information</Text>
+    </View>
+    <Text style={styles.chevron}>›</Text>
+  </TouchableOpacity>
+  
+  <TouchableOpacity 
+    style={styles.settingItem}
+    onPress={() => Linking.openURL('https://rmtrpm.duckdns.org/privacy')}
+  >
+    <View style={styles.settingInfo}>
+      <Text style={styles.settingName}>Data Processing Agreement</Text>
+      <Text style={styles.settingDescription}>How we handle and process your data</Text>
+    </View>
+    <Text style={styles.chevron}>›</Text>
+  </TouchableOpacity>
+</View>
 
         {/* Compliance Badge */}
         <View style={styles.complianceCard}>
